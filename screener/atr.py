@@ -1,4 +1,3 @@
-import time
 import asyncio
 from collections import defaultdict, deque
 from config import ATR_PERIOD, CANDLE_TIMEFRAME_SEC

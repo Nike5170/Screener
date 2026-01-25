@@ -1,5 +1,5 @@
 import time
-from collections import defaultdict
+
 from config import (
     CLUSTER_INTERVAL,
     IMPULSE_MAX_LOOKBACK,
@@ -18,42 +18,13 @@ class ImpulseDetector:
         self.alert_times = []
         self.silence_until = 0
 
-    def build_clusters(self, price_history_symbol):
-        """
-        Создаёт кластеры и сразу вычисляет min/max для каждого.
-        Возвращает:
-        clusters:      dict[cluster_id] = list[(t,p)]
-        cluster_extremes: dict[cluster_id] = (t_base, p_min, p_max)
-        """
-        from collections import defaultdict
-
-        clusters = defaultdict(list)
-        cluster_extremes = {}
-
-        for t, p in price_history_symbol:
-            cid = int(t / CLUSTER_INTERVAL)
-            clusters[cid].append((t, p))
-
-            # вычисляем минимальные данные "на лету"
-            if cid not in cluster_extremes:
-                cluster_extremes[cid] = [t, p, p]  # t_base, p_min, p_max
-            else:
-                t_base, p_min, p_max = cluster_extremes[cid]
-                cluster_extremes[cid][1] = min(p_min, p)
-                cluster_extremes[cid][2] = max(p_max, p)
-
-        return clusters, cluster_extremes
-
-
-    async def check_atr_impulse(self, symbol, price_history, atr_cache, last_alert_time, symbol_threshold):
+    async def check_atr_impulse(self, symbol, price_history, atr_cache, last_alert_time, symbol_threshold, cluster_extremes):
         now = time.time()
         prices = price_history.get(symbol, [])
         if len(prices) < 5:
             return
 
         cur_time, cur_price = prices[-1]
-
-        clusters, cluster_extremes = self.build_clusters(prices)
 
         clustered_prices = []
         for cid in sorted(cluster_extremes):
@@ -91,9 +62,6 @@ class ImpulseDetector:
         if not impulse_found:
             return
 
-        cluster_id = int(ref_time / CLUSTER_INTERVAL)
-        cluster_ticks = clusters.get(cluster_id, [])
-
         direction = cur_price - ref_price
         duration = max(cur_time - ref_time, IMPULSE_MIN_LOOKBACK)
 
@@ -120,7 +88,6 @@ class ImpulseDetector:
             "threshold": symbol_threshold,
             "atr_percent": (atr / cur_price) * 100,
             "max_delta": max_delta,
-            "max_delta_price": max_delta_price,
-            "cluster_id": cluster_id,
-            "cluster_ticks": cluster_ticks  # ← только нужный кластер
+            "max_delta_price": max_delta_price
         }
+    

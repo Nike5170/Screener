@@ -1,136 +1,93 @@
 # notifier.py
 import asyncio
 import aiohttp
-import socket
+import time
+
 from logger import Logger
-from config import (
-    TELEGRAM_TOKEN,
-    TELEGRAM_CHAT_IDS,
-    CLIPBOARD_HOSTS,
-    CLIPBOARD_PORT,
-    CLIPBOARD_CONNECT_ATTEMPTS,
-    CLIPBOARD_RETRY_BACKOFF
-)
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
 
 class Notifier:
+    """
+    Telegram + WS outbound signals.
+
+    Раньше send_clipboard() слал символ в LAN insert app.
+    Теперь send_clipboard() = отправка события link_symbol по SignalHub (WS).
+    """
+
     def __init__(self):
         self.TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        self.chat_id = TELEGRAM_CHAT_ID
 
-        self.chat_ids = TELEGRAM_CHAT_IDS
-        self.queue = asyncio.Queue()
+        self.telegram_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=2000)
 
-        # Clipboard
-        self.clipboard_hosts = CLIPBOARD_HOSTS
-        self.clipboard_port = CLIPBOARD_PORT
-        self.clipboard_connections = {}
+        self._session: aiohttp.ClientSession | None = None
+        self._timeout = aiohttp.ClientTimeout(total=8, connect=3, sock_read=5)
 
+        self._signal_hub = None
+        self._tg_task: asyncio.Task | None = None
 
-    async def init_clipboard(self):
-        for host in self.clipboard_hosts:
-            for attempt in range(1, CLIPBOARD_CONNECT_ATTEMPTS + 1):
-                try:
-                    Logger.info(f"Подключаемся к {host}:{self.clipboard_port} (попытка {attempt})")
-                    _, writer = await asyncio.open_connection(host, self.clipboard_port)
-                    self.clipboard_connections[host] = writer
-                    Logger.success(f"Соединение установлено с {host}")
-                    break
-                except Exception as e:
-                    Logger.error(f"Ошибка подключения: {e}")
-                    await asyncio.sleep(CLIPBOARD_RETRY_BACKOFF ** attempt)
-
+    def set_signal_hub(self, signal_hub):
+        self._signal_hub = signal_hub
 
     async def start(self):
-        # 3 воркера → параллельная отправка без задержек
-        for _ in range(3):
-            asyncio.create_task(self.worker())
+        self._session = aiohttp.ClientSession(timeout=self._timeout)
+        self._tg_task = asyncio.create_task(self._telegram_worker(), name="telegram_worker")
 
+    async def close(self):
+        if self._tg_task:
+            self._tg_task.cancel()
+            self._tg_task = None
+        if self._session:
+            await self._session.close()
+            self._session = None
 
     async def send_message(self, text: str):
-        await self.queue.put(("telegram", text))
-
+        try:
+            self.telegram_queue.put_nowait(text)
+        except asyncio.QueueFull:
+            Logger.warn("Telegram queue full → message dropped")
 
     async def send_clipboard(self, text: str):
-        await self.queue.put(("clipboard", text))
+        """
+        Было: отправка по локалке.
+        Стало: WS событие link_symbol для клиента (если он подключен).
+        """
+        if not self._signal_hub:
+            return
 
-
-    async def worker(self):
-        while True:
-            channel, text = await self.queue.get()
-
-            if channel == "telegram":
-                await self._send_telegram(text)
-            else:
-                await self._send_clipboard(text)
-
-            self.queue.task_done()
-
-
-    async def _send_telegram(self, message):
-        payloads = [
-            {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-            for chat_id in self.chat_ids
-        ]
-
-        for payload in payloads:
-            for attempt in range(1, 5):
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(self.TG_URL, json=payload) as resp:
-
-                            if resp.status == 200:
-                                Logger.info(f"📨 Telegram → OK ({payload['chat_id']})")
-                                break
-
-                            Logger.error(
-                                f"⚠ Telegram status {resp.status}: {await resp.text()}"
-                            )
-                            await asyncio.sleep(0.2)
-
-                except asyncio.TimeoutError:
-                    Logger.error(f"⏳ Timeout → retry {attempt}")
-                    await asyncio.sleep(0.2)
-
-                except Exception as e:
-                    Logger.error(f"❌ Ошибка Telegram: {e}")
-                    await asyncio.sleep(0.25)
-
-
-
-    async def _send_clipboard(self, message):
-        for host in self.clipboard_hosts:
-            try:
-                writer = self.clipboard_connections.get(host)
-
-                if writer is None or writer.is_closing():
-                    Logger.error(f"Соединение с {host} отсутствует → переподключаемся...")
-                    await self._reconnect(host)
-                    writer = self.clipboard_connections.get(host)
-
-                    if writer is None:
-                        Logger.error(f"❌ Не удалось восстановить соединение ({host})")
-                        continue
-
-                writer.write((message + "\n").encode("utf-8"))
-                await writer.drain()
-                Logger.info(f"📋 Clipboard → '{message}'")
-
-            except Exception as e:
-                Logger.error(f"Ошибка отправки: {e}")
-                await self._reconnect(host)
-
-
-    async def _reconnect(self, host):
         try:
-            Logger.info(f"🔄 Переподключение {host}...")
-            _, writer = await asyncio.open_connection(host, self.clipboard_port)
-            self.clipboard_connections[host] = writer
-            Logger.success(f"🔗 Соединение восстановлено: {host}")
-
+            await self._signal_hub.broadcast({
+                "type": "link_symbol",
+                "symbol": str(text).upper(),
+                "ts": float(time.time()),
+            })
         except Exception as e:
-            Logger.error(f"❌ Не удалось восстановить соединение с {host}: {e}")
+            Logger.error(f"SignalHub broadcast error: {e}")
+
+    async def _telegram_worker(self):
+        while True:
+            text = await self.telegram_queue.get()
             try:
-                self.clipboard_connections[host].close()
-            except:
-                pass
-            self.clipboard_connections.pop(host, None)
+                await self._send_telegram(text)
+            except Exception as e:
+                Logger.error(f"Telegram worker error: {e}")
+            finally:
+                self.telegram_queue.task_done()
+
+    async def _send_telegram(self, text: str):
+        if not self._session:
+            Logger.error("Telegram session not initialized")
+            return
+
+        payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
+        try:
+            async with self._session.post(self.TG_URL, json=payload) as resp:
+                if resp.status == 200:
+                    Logger.info(f"📨 Telegram → OK ({self.chat_id})")
+                else:
+                    Logger.error(f"⚠ Telegram status {resp.status}: {await resp.text()}")
+        except asyncio.TimeoutError:
+            Logger.error("⏳ Telegram timeout")
+        except Exception as e:
+            Logger.error(f"❌ Telegram exception: {e}")

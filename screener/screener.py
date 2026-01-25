@@ -1,16 +1,17 @@
 import asyncio
 import time
 from screener.atr import ATRCalculator
-from screener.volume import VolumeCalculator
 from screener.impulses import ImpulseDetector
 from screener.ws_manager import WSManager
 from screener.symbol_fetcher import SymbolFetcher
 from notifier import Notifier
 from logger import Logger
 from datetime import datetime
+from screener.clusters import ClusterManager
 from collections import deque
 from config import PRICE_HISTORY_MAXLEN, CLUSTER_INTERVAL, VOLUME_HISTORY_MAXLEN
-from statistics_calculator import StatisticsCalculator
+from config import IMPULSE_MIN_TRADES, ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA, MARK_DELTA_PCT
+from screener.signal_hub import SignalHub
 
 
 class ATRImpulseScreener:
@@ -20,14 +21,16 @@ class ATRImpulseScreener:
         self.volume_history = {}
         self.last_alert_time = {}
         self.symbol_thresholds = {}
-        self.stats_calc = StatisticsCalculator()
+        self.cluster_mgr = ClusterManager()
 
         self.atr_calculator = ATRCalculator()
-        # self.volume_calculator = VolumeCalculator()
         self.impulse_detector = ImpulseDetector()
         self.ws_manager = WSManager(self.handle_trade)
+        self.ws_manager.set_mark_handler(self.handle_mark)
         self.symbol_fetcher = SymbolFetcher()
-
+        self.last_price = {}
+        self.mark_price = {}
+        self.signal_hub = None
         # Чтобы отслеживать активные WS-задания
         self.active_ws_tasks = {}
 
@@ -37,6 +40,8 @@ class ATRImpulseScreener:
         qty   = float(data.get("q", 0))
         ts    = time.time()
 
+        self.last_price[symbol] = price
+        self.cluster_mgr.add_tick(symbol, ts, price)
         self.price_history.setdefault(symbol, deque(maxlen=PRICE_HISTORY_MAXLEN)).append((ts, price))
         self.volume_history.setdefault(symbol, deque(maxlen=VOLUME_HISTORY_MAXLEN)).append((ts, qty))
 
@@ -47,38 +52,50 @@ class ATRImpulseScreener:
 
 
         # ---- Импульс ----
-        result = await self.impulse_detector.check_atr_impulse(
-            symbol,
-            self.price_history,
-            atr_cache,
-            self.last_alert_time,
-            threshold
-        )
+        cluster_extremes = self.cluster_mgr.get_extremes(symbol, ts)
+
+        result = None
+        if ENABLE_ATR_IMPULSE:
+            result = await self.impulse_detector.check_atr_impulse(
+                symbol,
+                self.price_history,
+                atr_cache,
+                self.last_alert_time,
+                threshold,
+                cluster_extremes
+            )
 
         if not result:
             return
 
+        impulse = result.get("impulse")
+        impulse_trade_count = len(impulse)
+
+        if impulse_trade_count < IMPULSE_MIN_TRADES:
+            return
+
+
         symbol_up = symbol.upper()
+        if self.signal_hub:
+            await self.signal_hub.broadcast({
+                "type": "impulse",
+                "exchange": "BINANCE-FUT",
+                "market": "FUTURES",
+                "symbol": symbol_up,
+                "change_percent": change_percent,
+                "impulse_trades": impulse_trade_count,
+                "impulse_volume_usdt": impulse_volume,
+                "ts": ts,
+                "reason": ["atr", "trades"]
+            })
+
+        Logger.success(
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал отправлен в Clipboard Worker: {symbol_up}"
+        )
 
         cur = result["cur"]
         ref_price = result["ref_price"]
         ref_time = result["ref_time"]
-
-        cluster_ticks = result.get("cluster_ticks", [])
-
-        Logger.warn("\n=== IMPULSE CLUSTER DETECTED ===")
-        Logger.warn(f"Symbol: {symbol_up}")
-        Logger.warn(f"Impulse detected at time: {ref_time:.3f}")
-        Logger.warn(f"Cluster ID: {result['cluster_id']}")
-
-        if cluster_ticks:
-            Logger.warn(f"Cluster tick count: {len(cluster_ticks)}")
-            Logger.warn("Cluster ticks:")
-            for tick_time, tick_price in cluster_ticks:
-                Logger.warn(f"  t={tick_time:.3f}, price={tick_price}")
-        else:
-            Logger.warn("❗Cluster ticks empty!")
-
 
         max_delta = result["max_delta"]
         max_delta_price = result["max_delta_price"]
@@ -124,30 +141,27 @@ class ATRImpulseScreener:
             f"🔥 Объём за импульс: {impulse_volume:,.1f} USDT ({impulse_trade_count} сделок)"
         )
 
-        Logger.success(
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал готов к отправке: {symbol_up}"
-        )
-
         # ████████████████████
         #    FIX: sending
         # ████████████████████
-        await self.notifier.send_clipboard(symbol_up)
         await self.notifier.send_message(message)
 
-        self.last_alert_time[symbol] = now
-        self.stats_calc.record_impulse(
-            symbol=symbol,
-            ref_time=ref_time,
-            ref_price=ref_price,
-            cur_price=cur,
-            direction=direction
+        Logger.success(
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал отправлен в Telegram Worker: {symbol_up}"
         )
-        asyncio.create_task(self.stats_calc.update_impulse(symbol, self.price_history))
+        self.last_alert_time[symbol] = now
 
     async def run(self):
         await self.notifier.start()
         await self.notifier.send_message("✅ ATR-скринер запущен.")
-        await self.notifier.init_clipboard()
+
+        self.signal_hub = SignalHub(
+            config_getter=self._get_runtime_config,
+            config_patcher=self._patch_runtime_config,
+            top_provider=self._get_top
+        )
+        await self.signal_hub.start()
+        self.notifier.set_signal_hub(self.signal_hub)
 
         while True:
             symbols_24h_volume = await self.symbol_fetcher.fetch_futures_symbols()
@@ -189,4 +203,58 @@ class ATRImpulseScreener:
             await asyncio.sleep(3600)
 
 
+    async def handle_mark(self, symbol, data):
+        if not ENABLE_MARK_DELTA:
+            return
 
+        mp = float(data.get("p", 0))
+        self.mark_price[symbol] = mp
+
+        lp = self.last_price.get(symbol)
+        if not lp or not mp:
+            return
+
+        delta_pct = abs((mp - lp) / lp) * 100.0
+
+        if delta_pct >= MARK_DELTA_PCT and self.signal_hub:
+            await self.signal_hub.broadcast({
+                "type": "mark_delta",
+                "exchange": "BINANCE-FUT",
+                "market": "FUTURES",
+                "symbol": symbol.upper(),
+                "delta_pct": round(delta_pct, 3),
+                "ts": time.time(),
+                "reason": ["mark_delta"]
+            })
+
+
+
+    def _get_runtime_config(self):
+        from config import (
+            IMPULSE_MAX_LOOKBACK, IMPULSE_MIN_LOOKBACK, IMPULSE_MIN_TRADES,
+            CLUSTER_INTERVAL, MARK_DELTA_PCT, ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
+        )
+        return {
+            "IMPULSE_MAX_LOOKBACK": IMPULSE_MAX_LOOKBACK,
+            "IMPULSE_MIN_LOOKBACK": IMPULSE_MIN_LOOKBACK,
+            "IMPULSE_MIN_TRADES": IMPULSE_MIN_TRADES,
+            "CLUSTER_INTERVAL": CLUSTER_INTERVAL,
+            "MARK_DELTA_PCT": MARK_DELTA_PCT,
+            "ENABLE_ATR_IMPULSE": ENABLE_ATR_IMPULSE,
+            "ENABLE_MARK_DELTA": ENABLE_MARK_DELTA,
+        }
+
+    def _patch_runtime_config(self, patch: dict):
+        import config as C
+        allow = set(self._get_runtime_config().keys())
+        for k, v in (patch or {}).items():
+            if k in allow:
+                setattr(C, k, v)
+        return self._get_runtime_config()
+
+    async def _get_top(self, mode: str, n: int):
+        if not hasattr(self, "symbol_24h_volume") or not self.symbol_24h_volume:
+            return []
+        vols = self.symbol_24h_volume.get("volumes", {})
+        items = sorted(vols.items(), key=lambda x: x[1], reverse=True)[:n]
+        return [{"symbol": s.upper(), "value": float(v)} for s, v in items]

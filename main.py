@@ -1,5 +1,5 @@
 import asyncio
-import time
+
 from screener.screener import ATRImpulseScreener
 from logger import Logger
 
