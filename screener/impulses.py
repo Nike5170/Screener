@@ -21,36 +21,34 @@ class ImpulseDetector:
         self.alert_times = []
         self.silence_until = 0
 
+# внутри screener/impulses.py
+
     async def check_atr_impulse(
         self,
         symbol,
-        price_history,
-        volume_history,
-        atr_cache,
+        cluster_mgr,          # <-- вместо price_history/volume_history/atr_cache
         last_alert_time,
         symbol_threshold,
-        cluster_extremes,
         last_price_map=None,
         mark_price_map=None,
     ):
         now = time.time()
 
-        prices = price_history.get(symbol, [])
-        vols = volume_history.get(symbol, [])
-
-        if len(prices) < 5 or len(vols) < 5:
+        dq = cluster_mgr.ticks.get(symbol, [])
+        if len(dq) < 5:
             return
 
-        cur_time, cur_price = prices[-1]
+        cur_time, cur_price, _ = dq[-1]
 
-        # --- cluster extremes -> list of candidate refs
+        cluster_extremes = cluster_mgr.get_extremes(symbol, cur_time)
+
         clustered_prices = []
         for cid in sorted(cluster_extremes):
             t_base, p_min, p_max = cluster_extremes[cid]
             clustered_prices.append((t_base, p_min))
             clustered_prices.append((t_base, p_max))
 
-        atr = atr_cache.get(symbol)
+        atr = cluster_mgr.get_atr(symbol)
         if not atr:
             return
 
@@ -81,19 +79,8 @@ class ImpulseDetector:
         if not impulse_found or ref_time is None or ref_price is None:
             return
 
-        # 2) ДОП-ПРОВЕРКИ: trades + mark_delta (всё внутри детекта)
-        impulse_trades = 0
-        impulse_volume_usdt = 0.0
-
-        # price_history и volume_history у тебя синхронно append'ятся → zip ок
-        for (t, p), (_, q) in zip(prices, vols):
-            if t < ref_time:
-                continue
-            if t > cur_time:
-                break
-            impulse_trades += 1
-            impulse_volume_usdt += (p * q)
-
+        # 2) доп-проверки: trades + volume (из cluster_mgr)
+        impulse_trades, impulse_volume_usdt = cluster_mgr.get_impulse_stats(symbol, ref_time, cur_time)
         if impulse_trades < IMPULSE_MIN_TRADES:
             return
 
@@ -106,7 +93,6 @@ class ImpulseDetector:
                 if mark_delta_pct < MARK_DELTA_PCT:
                     return
             else:
-                # нет данных mark/last → не подтверждаем импульс
                 return
 
         # 3) антиспам — только если все условия прошли

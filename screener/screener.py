@@ -1,7 +1,6 @@
 import asyncio
 import time
 from unittest import result
-from screener.atr import ATRCalculator
 from screener.impulses import ImpulseDetector
 from screener.ws_manager import WSManager
 from screener.symbol_fetcher import SymbolFetcher
@@ -9,22 +8,17 @@ from notifier import Notifier
 from logger import Logger
 from datetime import datetime
 from screener.clusters import ClusterManager
-from collections import deque
-from config import PRICE_HISTORY_MAXLEN, VOLUME_HISTORY_MAXLEN
-from config import IMPULSE_MIN_TRADES, ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
+from config import ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
 from screener.signal_hub import SignalHub
 
 
 class ATRImpulseScreener:
     def __init__(self):
         self.notifier = Notifier()
-        self.price_history = {}
-        self.volume_history = {}
         self.last_alert_time = {}
         self.symbol_thresholds = {}
         self.cluster_mgr = ClusterManager()
 
-        self.atr_calculator = ATRCalculator()
         self.impulse_detector = ImpulseDetector()
         self.ws_manager = WSManager(self.handle_trade)
         self.ws_manager.set_mark_handler(self.handle_mark)
@@ -36,43 +30,31 @@ class ATRImpulseScreener:
         self.active_ws_tasks = {}
 
     async def handle_trade(self, symbol, data):
-
         price = float(data.get("p", 0))
         qty   = float(data.get("q", 0))
         ts    = time.time()
 
         self.last_price[symbol] = price
-        self.cluster_mgr.add_tick(symbol, ts, price)
-        self.price_history.setdefault(symbol, deque(maxlen=PRICE_HISTORY_MAXLEN)).append((ts, price))
-        self.volume_history.setdefault(symbol, deque(maxlen=VOLUME_HISTORY_MAXLEN)).append((ts, qty))
 
-        asyncio.create_task(self.atr_calculator.update_atr_throttled(symbol, self.price_history))
+        # ЕДИНСТВЕННОЕ место, где обновляется "история"
+        self.cluster_mgr.add_tick(symbol, ts, price, qty)
 
-        atr_cache = self.atr_calculator.atr_cache
         threshold = self.symbol_thresholds.get(symbol.lower(), 1.0)
-
-
-        # ---- Импульс ----
-        cluster_extremes = self.cluster_mgr.get_extremes(symbol, ts)
 
         result = None
         if ENABLE_ATR_IMPULSE:
             result = await self.impulse_detector.check_atr_impulse(
                 symbol=symbol,
-                price_history=self.price_history,
-                volume_history=self.volume_history,
-                atr_cache=atr_cache,
+                cluster_mgr=self.cluster_mgr,
                 last_alert_time=self.last_alert_time,
                 symbol_threshold=threshold,
-                cluster_extremes=cluster_extremes,
                 last_price_map=self.last_price,
                 mark_price_map=self.mark_price,
             )
 
-
         if not result:
             return
-        
+
         cur = result["cur"]
         ref_price = result["ref_price"]
         ref_time = result["ref_time"]
@@ -81,25 +63,13 @@ class ATRImpulseScreener:
         max_delta_price = result["max_delta_price"]
         change_percent = result["change_percent"]
         now = time.time()
+
         impulse_trade_count = result["impulse_trades"]
         impulse_volume = result["impulse_volume_usdt"]
         reason = result.get("reason") or ["atr"]
 
         volume_24h = self.symbol_24h_volume["volumes"].get(symbol.lower(), 0)
         
-        impulse = [
-            (t, p, q) for (t, p), (_, q) in zip(
-                self.price_history.get(symbol, []),
-                self.volume_history.get(symbol, [])
-            )
-            if ref_time <= t <= now
-        ]
-
-        impulse_trade_count = len(impulse)
-        if impulse_trade_count < IMPULSE_MIN_TRADES:
-            return
-
-        impulse_volume = sum(p * q for (t, p, q) in impulse)
 
         symbol_up = symbol.upper()
         if self.signal_hub:

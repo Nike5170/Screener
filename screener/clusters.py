@@ -1,100 +1,204 @@
 # screener/clusters.py
 from collections import defaultdict, deque
-from config import CLUSTER_INTERVAL, IMPULSE_MAX_LOOKBACK
+
+from config import (
+    CLUSTER_INTERVAL,
+    IMPULSE_MAX_LOOKBACK,
+    CANDLE_TIMEFRAME_SEC,
+    ATR_PERIOD,
+)
+
 
 class ClusterManager:
     """
-    Хранит тики только в окне IMPULSE_MAX_LOOKBACK и поддерживает экстремумы кластеров инкрементально.
-    Возвращает cluster_extremes: cid -> [t_base, p_min, p_max]
+    Единый "тик-стор" на символ:
+      - ticks: deque[(t, p, q)] только в окне IMPULSE_MAX_LOOKBACK
+      - cluster_stats: cid -> [t_base, p_min, p_max, trades, vol_usdt]
+      - 1m свечи -> ATR (кеш atr_cache)
+
+    Важно: мы не держим отдельные price_history / volume_history.
     """
+
     def __init__(self):
-        self.ticks = defaultdict(lambda: deque())  # symbol -> deque[(t, p)]
-        self.cluster_extremes = defaultdict(dict)  # symbol -> {cid: [t_base, p_min, p_max]}
+        self.ticks = defaultdict(lambda: deque())          # symbol -> deque[(t,p,q)]
+        self.cluster_stats = defaultdict(dict)             # symbol -> {cid: [t_base,p_min,p_max,trades,vol_usdt]}
 
-    def add_tick(self, symbol: str, t: float, p: float):
+        # ATR via 1m candles
+        self.current_candle = {}                           # symbol -> {"minute", "open","high","low","close"}
+        self.candles = defaultdict(lambda: deque(maxlen=ATR_PERIOD))  # symbol -> deque[candle]
+        self.atr_cache = {}                                # symbol -> float
+
+    # ------------------------------
+    # Public API
+    # ------------------------------
+    def add_tick(self, symbol: str, t: float, p: float, q: float):
         dq = self.ticks[symbol]
-        dq.append((t, p))
+        dq.append((t, p, q))
 
-        # обновляем кластер для этого тика
+        # 1) update cluster stats
         cid = int(t / CLUSTER_INTERVAL)
-        ext = self.cluster_extremes[symbol].get(cid)
+        st = self.cluster_stats[symbol].get(cid)
+        vol_usdt = p * q
 
-        if ext is None:
-            self.cluster_extremes[symbol][cid] = [t, p, p]
+        if st is None:
+            # [t_base, p_min, p_max, trades, vol_usdt]
+            self.cluster_stats[symbol][cid] = [t, p, p, 1, vol_usdt]
         else:
-            t_base, p_min, p_max = ext
-            # t_base = самый ранний t в кластере (внутри окна)
-            if t < t_base:
-                ext[0] = t
-            if p < p_min:
-                ext[1] = p
-            if p > p_max:
-                ext[2] = p
+            if t < st[0]:
+                st[0] = t
+            if p < st[1]:
+                st[1] = p
+            if p > st[2]:
+                st[2] = p
+            st[3] += 1
+            st[4] += vol_usdt
 
-        # выкидываем старые тики и чистим затронутые кластеры
+        # 2) update candle + maybe ATR on close
+        self._update_candle_and_atr(symbol, t, p)
+
+        # 3) evict old ticks
         self._evict_old(symbol, t)
 
     def get_extremes(self, symbol: str, cur_time: float):
         """
-        Вернуть dict cid->[t_base,p_min,p_max] только по окну.
+        Вернуть dict cid -> [t_base, p_min, p_max] по текущему окну.
         """
         self._evict_old(symbol, cur_time)
-        return self.cluster_extremes.get(symbol, {})
+        stats = self.cluster_stats.get(symbol, {})
+        return {cid: [st[0], st[1], st[2]] for cid, st in stats.items()}
+
+    def get_atr(self, symbol: str):
+        return self.atr_cache.get(symbol)
+
+    def get_impulse_stats(self, symbol: str, ref_time: float, cur_time: float):
+        """
+        Быстро посчитать trades + vol_usdt за импульс по тикам (одно окно).
+        """
+        dq = self.ticks.get(symbol)
+        if not dq:
+            return 0, 0.0
+
+        trades = 0
+        vol_usdt = 0.0
+        for t, p, q in dq:
+            if t < ref_time:
+                continue
+            if t > cur_time:
+                break
+            trades += 1
+            vol_usdt += p * q
+        return trades, vol_usdt
+
+    # ------------------------------
+    # Internal helpers
+    # ------------------------------
+    def _update_candle_and_atr(self, symbol: str, ts: float, price: float):
+        minute = int(ts // CANDLE_TIMEFRAME_SEC)
+
+        if symbol not in self.current_candle or self.current_candle[symbol]["minute"] != minute:
+            # close previous candle
+            if symbol in self.current_candle:
+                closed = self.current_candle[symbol]
+                self.candles[symbol].append(closed)
+                self._recompute_atr(symbol)
+
+            # open new candle
+            self.current_candle[symbol] = {
+                "minute": minute,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+            }
+        else:
+            c = self.current_candle[symbol]
+            c["high"] = max(c["high"], price)
+            c["low"] = min(c["low"], price)
+            c["close"] = price
+
+    def _recompute_atr(self, symbol: str):
+        cs = self.candles[symbol]
+        if len(cs) < 2:
+            return
+
+        prev_close = None
+        tr_list = []
+
+        for candle in cs:
+            high = candle["high"]
+            low = candle["low"]
+            close = candle["close"]
+
+            if prev_close is None:
+                tr = high - low
+            else:
+                tr = max(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close),
+                )
+
+            tr_list.append(tr)
+            prev_close = close
+
+        self.atr_cache[symbol] = sum(tr_list) / len(tr_list)
 
     def _evict_old(self, symbol: str, cur_time: float):
         cutoff = cur_time - IMPULSE_MAX_LOOKBACK
         dq = self.ticks[symbol]
-        extremes = self.cluster_extremes[symbol]
+        stats = self.cluster_stats[symbol]
 
-        # какие кластеры надо будет пересчитать (если удалённый тик мог быть min/max)
         dirty_cids = set()
 
         while dq and dq[0][0] < cutoff:
-            t_old, p_old = dq.popleft()
+            t_old, p_old, q_old = dq.popleft()
             cid_old = int(t_old / CLUSTER_INTERVAL)
 
-            ext = extremes.get(cid_old)
-            if ext is None:
+            st = stats.get(cid_old)
+            if st is None:
                 continue
 
-            # если удаляемый тик мог быть значимым для экстремумов — пометим кластер
-            if p_old == ext[1] or p_old == ext[2] or t_old == ext[0]:
+            # вычитаем trades/vol инкрементально
+            st[3] -= 1
+            st[4] -= (p_old * q_old)
+
+            # если затронули экстремум/базовое время — пометим кластер на пересчёт
+            if t_old == st[0] or p_old == st[1] or p_old == st[2]:
                 dirty_cids.add(cid_old)
 
-        # пересчитываем только грязные кластеры по текущему deque (в окне)
-        if dirty_cids:
-            for cid in dirty_cids:
-                self._recompute_cluster(symbol, cid)
+            # если trades ушли в 0 — кластер пустой
+            if st[3] <= 0:
+                stats.pop(cid_old, None)
 
-        # удаляем пустые/вышедшие кластеры (опционально, но полезно)
-        # если в окне больше нет тиков данного cid, _recompute_cluster его удалит
+        # пересчитываем только грязные кластера по текущему dq
+        for cid in dirty_cids:
+            self._recompute_cluster(symbol, cid)
 
     def _recompute_cluster(self, symbol: str, cid: int):
         dq = self.ticks[symbol]
-        extremes = self.cluster_extremes[symbol]
+        stats = self.cluster_stats[symbol]
 
         t_base = None
         p_min = None
         p_max = None
-        found = False
+        trades = 0
+        vol_usdt = 0.0
 
-        for t, p in dq:
+        for t, p, q in dq:
             if int(t / CLUSTER_INTERVAL) != cid:
                 continue
-            if not found:
-                found = True
-                t_base = t
-                p_min = p
-                p_max = p
-            else:
-                if t < t_base:
-                    t_base = t
-                if p < p_min:
-                    p_min = p
-                if p > p_max:
-                    p_max = p
 
-        if not found:
-            extremes.pop(cid, None)
+            if t_base is None or t < t_base:
+                t_base = t
+            if p_min is None or p < p_min:
+                p_min = p
+            if p_max is None or p > p_max:
+                p_max = p
+
+            trades += 1
+            vol_usdt += p * q
+
+        if trades == 0:
+            stats.pop(cid, None)
         else:
-            extremes[cid] = [t_base, p_min, p_max]
+            stats[cid] = [t_base, p_min, p_max, trades, vol_usdt]
