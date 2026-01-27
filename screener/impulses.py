@@ -17,6 +17,29 @@ class ImpulseDetector:
     def __init__(self):
         self.alert_times = []
         self.silence_until = 0
+        
+    def build_clusters(self, price_history_symbol, cur_time):
+        from collections import defaultdict
+
+        clusters = defaultdict(list)
+        cluster_extremes = {}
+
+        for t, p in reversed(price_history_symbol):
+            if cur_time - t > IMPULSE_MAX_LOOKBACK:
+                break
+
+            cid = int(t / CLUSTER_INTERVAL)
+            clusters[cid].append((t, p))
+
+            if cid not in cluster_extremes:
+                cluster_extremes[cid] = [t, p, p]  # t_base, p_min, p_max
+            else:
+                t_base, p_min, p_max = cluster_extremes[cid]
+                cluster_extremes[cid][0] = min(t_base, t)
+                cluster_extremes[cid][1] = min(p_min, p)
+                cluster_extremes[cid][2] = max(p_max, p)
+
+        return clusters, cluster_extremes
 
     async def check_atr_impulse(self, symbol, price_history, atr_cache, last_alert_time, symbol_threshold, cluster_extremes):
         now = time.time()
