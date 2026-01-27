@@ -6,7 +6,14 @@ from logger import Logger
 async def main():
     Logger.success("Запуск ATR-скринера...")
     screener = ATRImpulseScreener()
-    await screener.run()
+    try:
+        await screener.run()
+    finally:
+        # на случай если вылетели до finally внутри run()
+        await screener.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

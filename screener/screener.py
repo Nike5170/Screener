@@ -163,46 +163,65 @@ class ATRImpulseScreener:
         await self.signal_hub.start()
         self.notifier.set_signal_hub(self.signal_hub)
 
-        while True:
-            symbols_24h_volume = await self.symbol_fetcher.fetch_futures_symbols()
+        try:
+            while True:
+                symbols_24h_volume = await self.symbol_fetcher.fetch_futures_symbols()
 
-            # сохраняем 24h объём
-            self.symbol_24h_volume = symbols_24h_volume
-            self.symbol_thresholds = symbols_24h_volume["thresholds"]
+                # сохраняем 24h объём
+                self.symbol_24h_volume = symbols_24h_volume
+                self.symbol_thresholds = symbols_24h_volume["thresholds"]
 
-            # создаём список символов
-            symbols = list(symbols_24h_volume["volumes"].keys())
+                # создаём список символов
+                symbols = list(symbols_24h_volume["volumes"].keys())
 
-            # сортировка: объём от большего к меньшему
-            symbols.sort(key=lambda s: symbols_24h_volume["volumes"][s], reverse=True)
+                # сортировка: объём от большего к меньшему
+                symbols.sort(key=lambda s: symbols_24h_volume["volumes"][s], reverse=True)
 
-            Logger.info(f"Всего символов после фильтров: {len(symbols)}")
-            Logger.info("Символ — Объём — Threshold:")
+                Logger.info(f"Всего символов после фильтров: {len(symbols)}")
+                Logger.info("Символ — Объём — Threshold:")
 
-            for s in symbols:
-                vol = symbols_24h_volume["volumes"][s]
-                th = symbols_24h_volume["thresholds"][s]
-                Logger.info(f"{s.upper()}: {vol:,.0f} USDT — порог {th}%")
+                for s in symbols:
+                    vol = symbols_24h_volume["volumes"][s]
+                    th = symbols_24h_volume["thresholds"][s]
+                    Logger.info(f"{s.upper()}: {vol:,.0f} USDT — порог {th}%")
 
-            Logger.info(f"Всего символов после фильтров: {len(symbols)}")
-            #Logger.info(f"Символы:\n{', '.join(symbols)}")
+                Logger.info(f"Всего символов после фильтров: {len(symbols)}")
+                #Logger.info(f"Символы:\n{', '.join(symbols)}")
 
-            # Запуск WS для новых символов
-            for symbol in symbols:
-                if symbol not in self.active_ws_tasks:
-                    Logger.info(f"Запущен WebSocket для {symbol}")
-                    self.ws_manager.start_task(symbol)
-                    self.active_ws_tasks[symbol] = True
+                # Запуск WS для новых символов
+                for symbol in symbols:
+                    if symbol not in self.active_ws_tasks:
+                        Logger.info(f"Запущен WebSocket для {symbol}")
+                        self.ws_manager.start_task(symbol)
+                        self.active_ws_tasks[symbol] = True
 
-            # Остановка WS для неактивных символов
-            to_remove = [s for s in self.active_ws_tasks if s not in symbols]
-            for s in to_remove:
-                self.ws_manager.stop_task(s)
-                del self.active_ws_tasks[s]
+                # Остановка WS для неактивных символов
+                to_remove = [s for s in self.active_ws_tasks if s not in symbols]
+                for s in to_remove:
+                    self.ws_manager.stop_task(s)
+                    del self.active_ws_tasks[s]
 
-            await asyncio.sleep(3600)
+                await asyncio.sleep(3600)
 
+        finally:
+            # если run() отменили (Ctrl+C) — всё аккуратно закрываем
+            await self.close()
 
+    async def close(self):
+        # стопнуть все binance ws таски
+        for s in list(self.active_ws_tasks.keys()):
+            self.ws_manager.stop_task(s)
+            self.active_ws_tasks.pop(s, None)
+
+        # закрыть signalhub server
+        if self._signalhub_server is not None:
+            self._signalhub_server.close()
+            await self._signalhub_server.wait_closed()
+            self._signalhub_server = None
+
+        # закрыть aiohttp сессию телеги
+        await self.notifier.close()
+        
     async def handle_mark(self, symbol, data):
         if not ENABLE_MARK_DELTA:
             return

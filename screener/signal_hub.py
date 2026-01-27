@@ -72,58 +72,64 @@ class SignalHub:
             self._clients.add(ci)
 
         try:
-            async for raw in ws:
-                if raw == "ping":
-                    await ws.send("pong")
-                    continue
+            try:
+                async for raw in ws:
+                    if raw == "ping":
+                        await ws.send("pong")
+                        continue
 
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    await ws.send(json.dumps({"type": "error", "error": "bad_json"}))
-                    continue
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        await ws.send(json.dumps({"type": "error", "error": "bad_json"}))
+                        continue
 
-                t = (msg.get("type") or "").lower()
+                    t = (msg.get("type") or "").lower()
 
-                if t == "auth":
-                    token = msg.get("token")
-                    ci.client_id = msg.get("client_id") or "unknown"
-                    if token != SIGNAL_HUB_TOKEN:
+                    if t == "auth":
+                        token = msg.get("token")
+                        ci.client_id = msg.get("client_id") or "unknown"
+                        if token != SIGNAL_HUB_TOKEN:
+                            await ws.send(json.dumps({"type": "error", "error": "unauthorized"}))
+                            await ws.close()
+                            return
+                        ci.authed = True
+                        await ws.send(json.dumps({"type": "ok", "ts": time.time()}))
+                        continue
+
+                    if not ci.authed:
                         await ws.send(json.dumps({"type": "error", "error": "unauthorized"}))
-                        await ws.close()
-                        return
-                    ci.authed = True
-                    await ws.send(json.dumps({"type": "ok", "ts": time.time()}))
-                    continue
+                        continue
 
-                if not ci.authed:
-                    await ws.send(json.dumps({"type": "error", "error": "unauthorized"}))
-                    continue
+                    if t == "get_config":
+                        await ws.send(json.dumps({"type": "config", "data": self._config_getter()}, ensure_ascii=False))
 
-                if t == "get_config":
-                    await ws.send(json.dumps({"type": "config", "data": self._config_getter()}, ensure_ascii=False))
+                    elif t == "set_config":
+                        patch = msg.get("patch") or {}
+                        applied = self._config_patcher(patch)
+                        await ws.send(json.dumps({"type": "config", "data": applied}, ensure_ascii=False))
 
-                elif t == "set_config":
-                    patch = msg.get("patch") or {}
-                    applied = self._config_patcher(patch)
-                    await ws.send(json.dumps({"type": "config", "data": applied}, ensure_ascii=False))
+                    elif t == "get_top":
+                        mode = msg.get("mode", "volume24h")
+                        n = int(msg.get("n", 5))
+                        items = await self._top_provider(mode=mode, n=n)
+                        await ws.send(json.dumps({"type": "top", "mode": mode, "items": items}, ensure_ascii=False))
 
-                elif t == "get_top":
-                    mode = msg.get("mode", "volume24h")
-                    n = int(msg.get("n", 5))
-                    items = await self._top_provider(mode=mode, n=n)
-                    await ws.send(json.dumps({"type": "top", "mode": mode, "items": items}, ensure_ascii=False))
+                    elif t == "metrics":
+                        if self._metrics_sink:
+                            await self._metrics_sink(ci.client_id, msg.get("event"), msg.get("data"))
+                        await ws.send(json.dumps({"type": "ok"}))
 
-                elif t == "metrics":
-                    if self._metrics_sink:
-                        await self._metrics_sink(ci.client_id, msg.get("event"), msg.get("data"))
-                    await ws.send(json.dumps({"type": "ok"}))
+                    elif t == "ping":
+                        await ws.send(json.dumps({"type": "pong"}))
 
-                elif t == "ping":
-                    await ws.send(json.dumps({"type": "pong"}))
+                    else:
+                        await ws.send(json.dumps({"type": "error", "error": "unknown_type"}))
 
-                else:
-                    await ws.send(json.dumps({"type": "error", "error": "unknown_type"}))
+            except (websockets.exceptions.ConnectionClosedOK,
+                    websockets.exceptions.ConnectionClosedError):
+                # Клиент отвалился/закрылся без close-frame — это нормальная ситуация
+                pass
 
         finally:
             async with self._lock:
