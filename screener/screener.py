@@ -89,8 +89,9 @@ class ATRImpulseScreener:
             f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал отправлен в Signal Hub: {symbol_up}"
         )
 
-        atr_value = atr_cache.get(symbol, 0)
+        atr_value = self.cluster_mgr.get_atr(symbol) or 0.0
         atr_percent = (atr_value / cur * 100) if (cur and atr_value) else 0
+
 
         direction = result["direction"]
         color = "🟢" if direction > 0 else "🔴"
