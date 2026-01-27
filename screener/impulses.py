@@ -1,7 +1,7 @@
+# screener/impulses.py
 import time
 
 from config import (
-    CLUSTER_INTERVAL,
     IMPULSE_MAX_LOOKBACK,
     IMPULSE_MIN_LOOKBACK,
     ATR_MULTIPLIER,
@@ -9,6 +9,9 @@ from config import (
     ANTI_SPAM_BURST_COUNT,
     ANTI_SPAM_BURST_WINDOW,
     ANTI_SPAM_SILENCE,
+    IMPULSE_MIN_TRADES,
+    ENABLE_MARK_DELTA,
+    MARK_DELTA_PCT,
 )
 from logger import Logger
 
@@ -17,38 +20,30 @@ class ImpulseDetector:
     def __init__(self):
         self.alert_times = []
         self.silence_until = 0
-        
-    def build_clusters(self, price_history_symbol, cur_time):
-        from collections import defaultdict
 
-        clusters = defaultdict(list)
-        cluster_extremes = {}
-
-        for t, p in reversed(price_history_symbol):
-            if cur_time - t > IMPULSE_MAX_LOOKBACK:
-                break
-
-            cid = int(t / CLUSTER_INTERVAL)
-            clusters[cid].append((t, p))
-
-            if cid not in cluster_extremes:
-                cluster_extremes[cid] = [t, p, p]  # t_base, p_min, p_max
-            else:
-                t_base, p_min, p_max = cluster_extremes[cid]
-                cluster_extremes[cid][0] = min(t_base, t)
-                cluster_extremes[cid][1] = min(p_min, p)
-                cluster_extremes[cid][2] = max(p_max, p)
-
-        return clusters, cluster_extremes
-
-    async def check_atr_impulse(self, symbol, price_history, atr_cache, last_alert_time, symbol_threshold, cluster_extremes):
+    async def check_atr_impulse(
+        self,
+        symbol,
+        price_history,
+        volume_history,
+        atr_cache,
+        last_alert_time,
+        symbol_threshold,
+        cluster_extremes,
+        last_price_map=None,
+        mark_price_map=None,
+    ):
         now = time.time()
+
         prices = price_history.get(symbol, [])
-        if len(prices) < 5:
+        vols = volume_history.get(symbol, [])
+
+        if len(prices) < 5 or len(vols) < 5:
             return
 
         cur_time, cur_price = prices[-1]
 
+        # --- cluster extremes -> list of candidate refs
         clustered_prices = []
         for cid in sorted(cluster_extremes):
             t_base, p_min, p_max = cluster_extremes[cid]
@@ -61,19 +56,20 @@ class ImpulseDetector:
 
         ref_time = None
         ref_price = None
-        max_delta = 0
+        max_delta = 0.0
         max_delta_price = None
         impulse_found = False
 
+        # 1) базовый детект: ATR + threshold
         for t, p in reversed(clustered_prices):
             if cur_time - t > IMPULSE_MAX_LOOKBACK:
                 break
 
             delta = cur_price - p
             delta_abs = abs(delta)
-            delta_percent = abs(delta / p) * 100
+            delta_percent = abs(delta / p) * 100.0
 
-            if not impulse_found and delta_abs >= ATR_MULTIPLIER * atr and delta_percent >= symbol_threshold:
+            if (not impulse_found) and (delta_abs >= ATR_MULTIPLIER * atr) and (delta_percent >= symbol_threshold):
                 impulse_found = True
                 ref_price = p
                 ref_time = t
@@ -82,23 +78,56 @@ class ImpulseDetector:
                 max_delta = delta_abs
                 max_delta_price = p
 
-        if not impulse_found:
+        if not impulse_found or ref_time is None or ref_price is None:
             return
 
-        direction = cur_price - ref_price
-        duration = max(cur_time - ref_time, IMPULSE_MIN_LOOKBACK)
+        # 2) ДОП-ПРОВЕРКИ: trades + mark_delta (всё внутри детекта)
+        impulse_trades = 0
+        impulse_volume_usdt = 0.0
 
+        # price_history и volume_history у тебя синхронно append'ятся → zip ок
+        for (t, p), (_, q) in zip(prices, vols):
+            if t < ref_time:
+                continue
+            if t > cur_time:
+                break
+            impulse_trades += 1
+            impulse_volume_usdt += (p * q)
+
+        if impulse_trades < IMPULSE_MIN_TRADES:
+            return
+
+        mark_delta_pct = None
+        if ENABLE_MARK_DELTA:
+            mp = (mark_price_map or {}).get(symbol)
+            lp = (last_price_map or {}).get(symbol) or cur_price
+            if mp and lp:
+                mark_delta_pct = abs((mp - lp) / lp) * 100.0
+                if mark_delta_pct < MARK_DELTA_PCT:
+                    return
+            else:
+                # нет данных mark/last → не подтверждаем импульс
+                return
+
+        # 3) антиспам — только если все условия прошли
         last_alert = last_alert_time.get(symbol, 0)
         if now - last_alert < ANTI_SPAM_PER_SYMBOL or now < self.silence_until:
             return
 
         self.alert_times.append(now)
-        if len([t for t in self.alert_times if now - t <= ANTI_SPAM_BURST_WINDOW]) >= ANTI_SPAM_BURST_COUNT:
+        burst = [t for t in self.alert_times if now - t <= ANTI_SPAM_BURST_WINDOW]
+        if len(burst) >= ANTI_SPAM_BURST_COUNT:
             self.silence_until = now + ANTI_SPAM_SILENCE
             Logger.warn("≥5 сигналов за 30 сек — тишина 30 сек")
             return
 
-        change_percent = (max_delta / ref_price) * 100
+        direction = cur_price - ref_price
+        duration = max(cur_time - ref_time, IMPULSE_MIN_LOOKBACK)
+        change_percent = (max_delta / ref_price) * 100.0
+
+        reason = ["atr", "threshold", "trades"]
+        if ENABLE_MARK_DELTA:
+            reason.append("mark_delta")
 
         return {
             "symbol": symbol,
@@ -109,8 +138,11 @@ class ImpulseDetector:
             "duration": duration,
             "direction": direction,
             "threshold": symbol_threshold,
-            "atr_percent": (atr / cur_price) * 100,
+            "atr_percent": (atr / cur_price) * 100.0,
             "max_delta": max_delta,
-            "max_delta_price": max_delta_price
+            "max_delta_price": max_delta_price,
+            "impulse_trades": impulse_trades,
+            "impulse_volume_usdt": impulse_volume_usdt,
+            "mark_delta_pct": round(mark_delta_pct, 3) if mark_delta_pct is not None else None,
+            "reason": reason,
         }
-    

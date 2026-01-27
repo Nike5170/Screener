@@ -1,5 +1,6 @@
 import asyncio
 import time
+from unittest import result
 from screener.atr import ATRCalculator
 from screener.impulses import ImpulseDetector
 from screener.ws_manager import WSManager
@@ -9,8 +10,8 @@ from logger import Logger
 from datetime import datetime
 from screener.clusters import ClusterManager
 from collections import deque
-from config import PRICE_HISTORY_MAXLEN, CLUSTER_INTERVAL, VOLUME_HISTORY_MAXLEN
-from config import IMPULSE_MIN_TRADES, ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA, MARK_DELTA_PCT
+from config import PRICE_HISTORY_MAXLEN, VOLUME_HISTORY_MAXLEN
+from config import IMPULSE_MIN_TRADES, ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
 from screener.signal_hub import SignalHub
 
 
@@ -57,13 +58,17 @@ class ATRImpulseScreener:
         result = None
         if ENABLE_ATR_IMPULSE:
             result = await self.impulse_detector.check_atr_impulse(
-                symbol,
-                self.price_history,
-                atr_cache,
-                self.last_alert_time,
-                threshold,
-                cluster_extremes
+                symbol=symbol,
+                price_history=self.price_history,
+                volume_history=self.volume_history,
+                atr_cache=atr_cache,
+                last_alert_time=self.last_alert_time,
+                symbol_threshold=threshold,
+                cluster_extremes=cluster_extremes,
+                last_price_map=self.last_price,
+                mark_price_map=self.mark_price,
             )
+
 
         if not result:
             return
@@ -76,6 +81,9 @@ class ATRImpulseScreener:
         max_delta_price = result["max_delta_price"]
         change_percent = result["change_percent"]
         now = time.time()
+        impulse_trade_count = result["impulse_trades"]
+        impulse_volume = result["impulse_volume_usdt"]
+        reason = result.get("reason") or ["atr"]
 
         volume_24h = self.symbol_24h_volume["volumes"].get(symbol.lower(), 0)
         
@@ -108,7 +116,7 @@ class ATRImpulseScreener:
             })
 
         Logger.success(
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал отправлен в Clipboard Worker: {symbol_up}"
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал отправлен в Signal Hub: {symbol_up}"
         )
 
         atr_value = atr_cache.get(symbol, 0)
@@ -218,27 +226,9 @@ class ATRImpulseScreener:
     async def handle_mark(self, symbol, data):
         if not ENABLE_MARK_DELTA:
             return
-
         mp = float(data.get("p", 0))
-        self.mark_price[symbol] = mp
-
-        lp = self.last_price.get(symbol)
-        if not lp or not mp:
-            return
-
-        delta_pct = abs((mp - lp) / lp) * 100.0
-
-        if delta_pct >= MARK_DELTA_PCT and self.signal_hub:
-            await self.signal_hub.broadcast({
-                "type": "mark_delta",
-                "exchange": "BINANCE-FUT",
-                "market": "FUTURES",
-                "symbol": symbol.upper(),
-                "delta_pct": round(delta_pct, 3),
-                "ts": time.time(),
-                "reason": ["mark_delta"]
-            })
-
+        if mp:
+            self.mark_price[symbol] = mp
 
 
     def _get_runtime_config(self):

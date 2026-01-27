@@ -41,12 +41,12 @@ ORDERBOOK_DEPTH_PERCENT = 0.02
 ORDERBOOK_REQUEST_DELAY = 1.0
 
 # --- DYNAMIC IMPULSE THRESHOLD ---
-IMPULSE_VOL_MIN = 30_000_000
+IMPULSE_VOL_MIN = 20_000_000
 IMPULSE_VOL_MAX = 5_000_000_000
 IMPULSE_P_MIN = 0.7
-IMPULSE_P_MAX = 2
+IMPULSE_P_MAX = 2.5
 # чем меньшне значение, тем больше импульсов детектится, кривая смещается в сторону меньших объёмов
-IMPULSE_EXPONENT = 0.7
+IMPULSE_EXPONENT = 0.8
 
 # --- API ---
 BINANCE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
@@ -66,7 +66,7 @@ STAT_FALL_THRESHOLD = 0.5   # % отката после импульса
 
 IMPULSE_MIN_TRADES = 1000
 
-MARK_DELTA_PCT = 3.0
+MARK_DELTA_PCT = 1.0
 ENABLE_ATR_IMPULSE = True
 ENABLE_MARK_DELTA = True
 
