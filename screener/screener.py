@@ -67,13 +67,31 @@ class ATRImpulseScreener:
 
         if not result:
             return
+        
+        cur = result["cur"]
+        ref_price = result["ref_price"]
+        ref_time = result["ref_time"]
 
-        impulse = result.get("impulse")
+        max_delta = result["max_delta"]
+        max_delta_price = result["max_delta_price"]
+        change_percent = result["change_percent"]
+        now = time.time()
+
+        volume_24h = self.symbol_24h_volume["volumes"].get(symbol.lower(), 0)
+        
+        impulse = [
+            (t, p, q) for (t, p), (_, q) in zip(
+                self.price_history.get(symbol, []),
+                self.volume_history.get(symbol, [])
+            )
+            if ref_time <= t <= now
+        ]
+
         impulse_trade_count = len(impulse)
-
         if impulse_trade_count < IMPULSE_MIN_TRADES:
             return
 
+        impulse_volume = sum(p * q for (t, p, q) in impulse)
 
         symbol_up = symbol.upper()
         if self.signal_hub:
@@ -92,31 +110,6 @@ class ATRImpulseScreener:
         Logger.success(
             f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Сигнал отправлен в Clipboard Worker: {symbol_up}"
         )
-
-        cur = result["cur"]
-        ref_price = result["ref_price"]
-        ref_time = result["ref_time"]
-
-        max_delta = result["max_delta"]
-        max_delta_price = result["max_delta_price"]
-        change_percent = result["change_percent"]
-        now = time.time()
-
-        # ████████████████████
-        #     24H Volume
-        # ████████████████████
-        volume_24h = self.symbol_24h_volume["volumes"].get(symbol.lower(), 0)
-
-        impulse = [
-            (t, p, q) for (t, p), (_, q) in zip(
-                self.price_history[symbol],
-                self.volume_history[symbol]
-            )
-            if ref_time <= t <= now
-        ]
-
-        impulse_volume = sum(p * q for (t, p, q) in impulse)
-        impulse_trade_count = len(impulse)
 
         atr_value = atr_cache.get(symbol, 0)
         atr_percent = (atr_value / cur * 100) if (cur and atr_value) else 0
