@@ -11,6 +11,43 @@ from screener.clusters import ClusterManager
 from config import ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
 from screener.signal_hub import SignalHub
 
+def fmt_compact_usdt(x: float) -> str:
+    try:
+        x = float(x or 0)
+    except Exception:
+        return "0"
+
+    absx = abs(x)
+
+    def _fmt(val: float, suffix: str, dec: int):
+        s = f"{val:.{dec}f}"
+        # убираем .0
+        if s.endswith(".0"):
+            s = s[:-2]
+        # русская запятая
+        s = s.replace(".", ",")
+        return f"{s}{suffix}"
+
+    if absx >= 1_000_000_000:
+        val = x / 1_000_000_000
+        return _fmt(val, "B", 1)  # 1,5B
+    if absx >= 1_000_000:
+        val = x / 1_000_000
+        return _fmt(val, "M", 1)  # 1,2M
+    if absx >= 1_000:
+        val = x / 1_000
+        # K без десятых, как ты просил (300K)
+        return _fmt(val, "K", 0)
+    return f"{int(x)}"
+
+def fmt_signed_pct(x: float, decimals: int = 3) -> str:
+    try:
+        x = float(x)
+    except Exception:
+        return "0%"
+    s = f"{x:+.{decimals}f}".replace(".", ",")
+    return f"{s}%"
+
 
 class ATRImpulseScreener:
     def __init__(self):
@@ -70,6 +107,21 @@ class ATRImpulseScreener:
 
         volume_24h = self.symbol_24h_volume["volumes"].get(symbol.lower(), 0)
         
+        mark_trigger = result.get("mark_delta_pct")  # будет signed после правки impulses.py
+        mark_extreme = None
+        if ENABLE_MARK_DELTA:
+            mark_extreme = self.cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, now)
+
+        mark_block = ""
+        if ENABLE_MARK_DELTA:
+            if mark_trigger is not None:
+                mark_block += f"🧷 Δ Mark-Last (срабатывание): {fmt_signed_pct(mark_trigger)}\n"
+            if mark_extreme:
+                mark_block += (
+                    f"📈 Δ Mark-Last max (импульс): {fmt_signed_pct(mark_extreme['delta'])} "
+                    f"(mark updates: {mark_extreme['mark_updates']})\n"
+                )
+
 
         symbol_up = symbol.upper()
         if self.signal_hub:
@@ -107,10 +159,12 @@ class ATRImpulseScreener:
             f"📍 Начальная цена импульса: {ref_price}\n"
             f"📉 Цена максимальной дельты: {max_delta_price} (Δ={max_delta:.4f})\n"
             f"🚀 Цена срабатывания: {cur}\n\n"
+            f"{mark_block}\n"
             f"Скорость: {speed_percent:.3f}%/сек\n"
             f"📐 Амплитуда импульса: {atr_impulse:.2f} ATR\n"
-            f"📊 Объём 24ч: {volume_24h:,.0f} USDT\n"
-            f"🔥 Объём за импульс: {impulse_volume:,.1f} USDT ({impulse_trade_count} сделок)"
+            f"📊 Объём 24ч: {fmt_compact_usdt(volume_24h)} USDT\n"
+            f"🔥 Объём за импульс: {fmt_compact_usdt(impulse_volume)} USDT ({impulse_trade_count} сделок)"
+
         )
 
         # ████████████████████
@@ -200,6 +254,7 @@ class ATRImpulseScreener:
         mp = float(data.get("p", 0))
         if mp:
             self.mark_price[symbol] = mp
+            self.cluster_mgr.add_mark(symbol, time.time(), mp)
 
 
     def _get_runtime_config(self):

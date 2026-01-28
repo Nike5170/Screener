@@ -28,12 +28,26 @@ class ClusterManager:
         self.candles = defaultdict(lambda: deque(maxlen=ATR_PERIOD))  # symbol -> deque[candle]
         self.atr_cache = {}                                # symbol -> float
 
+                # --- Mark сегменты (sample-and-hold) ---
+        self._mark_cur = {}  # symbol -> current mark float
+        self._mark_seg = {}  # symbol -> {"start","mark","last_min","last_max"}
+        self._mark_segs = defaultdict(lambda: deque())  # symbol -> deque[seg]
+
+
     # ------------------------------
     # Public API
     # ------------------------------
     def add_tick(self, symbol: str, t: float, p: float, q: float):
         dq = self.ticks[symbol]
         dq.append((t, p, q))
+
+        # update mark-segment extremes (last_min/last_max) при фиксированном mark
+        seg = self._mark_seg.get(symbol)
+        if seg is not None:
+            if p < seg["last_min"]:
+                seg["last_min"] = p
+            if p > seg["last_max"]:
+                seg["last_max"] = p
 
         # 1) update cluster stats
         cid = int(t / CLUSTER_INTERVAL)
@@ -58,6 +72,40 @@ class ClusterManager:
 
         # 3) evict old ticks
         self._evict_old(symbol, t)
+
+    def add_mark(self, symbol: str, t: float, mark: float):
+        # дедуп: если mark не изменился — игнор
+        prev = self._mark_cur.get(symbol)
+        if prev is not None and prev == mark:
+            return
+
+        # закрываем предыдущий сегмент
+        old = self._mark_seg.get(symbol)
+        if old is not None:
+            old["end"] = t
+            self._mark_segs[symbol].append(old)
+
+        # старт нового сегмента: mark фиксируется,
+        # last_min/last_max инициализируем последним last (если есть)
+        last_price = None
+        dq = self.ticks.get(symbol)
+        if dq:
+            last_price = dq[-1][1]
+
+        if last_price is None:
+            last_price = mark  # fallback
+
+        self._mark_cur[symbol] = mark
+        self._mark_seg[symbol] = {
+            "start": t,
+            "end": None,          # open segment
+            "mark": mark,
+            "last_min": last_price,
+            "last_max": last_price,
+        }
+
+        # чистим старые сегменты по окну
+        self._evict_mark_old(symbol, t)
 
     def get_extremes(self, symbol: str, cur_time: float):
         """
@@ -202,3 +250,81 @@ class ClusterManager:
             stats.pop(cid, None)
         else:
             stats[cid] = [t_base, p_min, p_max, trades, vol_usdt]
+
+    def get_mark_last_delta_extreme(self, symbol: str, ref_time: float, cur_time: float):
+        """
+        Возвращает:
+          - delta_pct_signed: экстремальная по модулю signed Δ% = (mark-last)/last*100
+          - mark_updates: сколько раз обновлялся mark в окне (кол-во сегментов, пересекающих окно)
+        """
+        # актуализируем чистку
+        self._evict_mark_old(symbol, cur_time)
+
+        segs = self._mark_segs.get(symbol)
+        cur = self._mark_seg.get(symbol)
+
+        if (not segs or len(segs) == 0) and cur is None:
+            return None
+
+        def overlap(a_start, a_end, b_start, b_end):
+            if a_end is None:
+                a_end = b_end
+            return not (a_end < b_start or a_start > b_end)
+
+        best = None  # {"delta": signed, "abs": abs, "mark_updates": int}
+        mark_updates = 0
+
+        def consider(seg):
+            nonlocal best, mark_updates
+            if not overlap(seg["start"], seg.get("end"), ref_time, cur_time):
+                return
+
+            mark_updates += 1
+
+            m = seg["mark"]
+            last_min = seg["last_min"]
+            last_max = seg["last_max"]
+
+            # две стороны экстремума
+            d_min = None
+            if last_min:
+                d_min = (m - last_min) / last_min * 100.0  # signed
+            d_max = None
+            if last_max:
+                d_max = (m - last_max) / last_max * 100.0  # signed
+
+            # выбираем экстремум по модулю
+            cand = []
+            if d_min is not None:
+                cand.append(d_min)
+            if d_max is not None:
+                cand.append(d_max)
+            if not cand:
+                return
+
+            d = max(cand, key=lambda x: abs(x))
+            if best is None or abs(d) > best["abs"]:
+                best = {"delta": d, "abs": abs(d)}
+
+        # закрытые сегменты
+        if segs:
+            for s in segs:
+                consider(s)
+
+        # текущий открытый
+        if cur is not None:
+            consider(cur)
+
+        if best is None:
+            return None
+
+        best["mark_updates"] = mark_updates
+        return best
+
+    def _evict_mark_old(self, symbol: str, cur_time: float):
+        cutoff = cur_time - IMPULSE_MAX_LOOKBACK
+        dq = self._mark_segs[symbol]
+
+        # выкидываем сегменты, которые целиком закончились до cutoff
+        while dq and dq[0].get("end") is not None and dq[0]["end"] < cutoff:
+            dq.popleft()

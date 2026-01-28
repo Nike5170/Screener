@@ -89,11 +89,12 @@ class ImpulseDetector:
             mp = (mark_price_map or {}).get(symbol)
             lp = (last_price_map or {}).get(symbol) or cur_price
             if mp and lp:
-                mark_delta_pct = abs((mp - lp) / lp) * 100.0
-                if mark_delta_pct < MARK_DELTA_PCT:
+                mark_delta_pct = (mp - lp) / lp * 100.0  # signed
+                if abs(mark_delta_pct) < MARK_DELTA_PCT:
                     return
             else:
                 return
+
 
         # 3) антиспам — только если все условия прошли
         last_alert = last_alert_time.get(symbol, 0)
