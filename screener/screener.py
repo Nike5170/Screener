@@ -66,6 +66,7 @@ class ATRImpulseScreener:
         # Чтобы отслеживать активные WS-задания
         self.active_ws_tasks = {}
 
+
     async def handle_trade(self, symbol, data):
         price = float(data.get("p", 0))
         qty   = float(data.get("q", 0))
@@ -107,10 +108,9 @@ class ATRImpulseScreener:
 
         volume_24h = self.symbol_24h_volume["volumes"].get(symbol.lower(), 0)
         
-        mark_trigger = result.get("mark_delta_pct")  # будет signed после правки impulses.py
-        mark_extreme = None
-        if ENABLE_MARK_DELTA:
-            mark_extreme = self.cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, now)
+        mark_trigger = result.get("mark_delta_pct")  # теперь это экстремум в окне
+        mark_extreme = result.get("mark_extreme")    # уже посчитано в impulses.py
+
 
         mark_block = ""
         if ENABLE_MARK_DELTA:

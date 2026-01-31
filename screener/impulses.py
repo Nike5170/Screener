@@ -34,13 +34,16 @@ class ImpulseDetector:
     ):
         now = time.time()
 
-        dq = cluster_mgr.ticks.get(symbol, [])
-        if len(dq) < 5:
+        lt = cluster_mgr.get_last_tick(symbol)
+        if not lt:
             return
 
-        cur_time, cur_price, _ = dq[-1]
+        cur_time, cur_price = lt
+
 
         cluster_extremes = cluster_mgr.get_extremes(symbol, cur_time)
+        if len(cluster_extremes) < 3:
+            return
 
         clustered_prices = []
         for cid in sorted(cluster_extremes):
@@ -85,15 +88,18 @@ class ImpulseDetector:
             return
 
         mark_delta_pct = None
+        mark_extreme = None
+
         if ENABLE_MARK_DELTA:
-            mp = (mark_price_map or {}).get(symbol)
-            lp = (last_price_map or {}).get(symbol) or cur_price
-            if mp and lp:
-                mark_delta_pct = (mp - lp) / lp * 100.0  # signed
-                if abs(mark_delta_pct) < MARK_DELTA_PCT:
-                    return
-            else:
+            # берем ЭКСТРЕМАЛЬНУЮ signed Δ% внутри окна импульса (ref_time -> cur_time)
+            mark_extreme = cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, cur_time)
+            if not mark_extreme:
                 return
+
+            mark_delta_pct = mark_extreme["delta"]  # signed
+            if abs(mark_delta_pct) < MARK_DELTA_PCT:
+                return
+
 
 
         # 3) антиспам — только если все условия прошли
@@ -131,5 +137,6 @@ class ImpulseDetector:
             "impulse_trades": impulse_trades,
             "impulse_volume_usdt": impulse_volume_usdt,
             "mark_delta_pct": round(mark_delta_pct, 3) if mark_delta_pct is not None else None,
+            "mark_extreme": mark_extreme,  # dict: {"delta","abs","mark_updates"} или None
             "reason": reason,
         }

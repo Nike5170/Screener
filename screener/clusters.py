@@ -12,7 +12,6 @@ from config import (
 class ClusterManager:
     """
     Единый "тик-стор" на символ:
-      - ticks: deque[(t, p, q)] только в окне IMPULSE_MAX_LOOKBACK
       - cluster_stats: cid -> [t_base, p_min, p_max, trades, vol_usdt]
       - 1m свечи -> ATR (кеш atr_cache)
 
@@ -20,26 +19,54 @@ class ClusterManager:
     """
 
     def __init__(self):
-        self.ticks = defaultdict(lambda: deque())          # symbol -> deque[(t,p,q)]
-        self.cluster_stats = defaultdict(dict)             # symbol -> {cid: [t_base,p_min,p_max,trades,vol_usdt]}
+        # ❌ больше НЕ храним ticks deque
+        self.cluster_stats = defaultdict(dict)  # symbol -> {cid: [t_base,p_min,p_max,trades,vol_usdt]}
+        self._pref = {}  # symbol -> {"base": int, "max": int, "tr": list[int], "vol": list[float], "built_to": int}
+
+        # Последний тик (чтобы impulses.py мог взять cur_time/cur_price без ticks)
+        self.last_tick = {}  # symbol -> (t, price)
 
         # ATR via 1m candles
-        self.current_candle = {}                           # symbol -> {"minute", "open","high","low","close"}
+        self.current_candle = {}  # symbol -> {"minute","open","high","low","close"}
         self.candles = defaultdict(lambda: deque(maxlen=ATR_PERIOD))  # symbol -> deque[candle]
-        self.atr_cache = {}                                # symbol -> float
+        self.atr_cache = {}  # symbol -> float
 
-                # --- Mark сегменты (sample-and-hold) ---
+        # --- Mark сегменты (sample-and-hold) ---
         self._mark_cur = {}  # symbol -> current mark float
-        self._mark_seg = {}  # symbol -> {"start","mark","last_min","last_max"}
+        self._mark_seg = {}  # symbol -> {"start","mark","last_min","last_max","end"}
         self._mark_segs = defaultdict(lambda: deque())  # symbol -> deque[seg]
 
+    def _rebuild_prefix(self, symbol: str, base_cid: int, max_cid: int):
+        stats = self.cluster_stats.get(symbol, {})
+        n = max_cid - base_cid + 1
+        tr = [0] * n
+        vol = [0.0] * n
+
+        run_tr = 0
+        run_vol = 0.0
+
+        for i in range(n):
+            cid = base_cid + i
+            st = stats.get(cid)
+            if st:
+                run_tr += st[3]
+                run_vol += st[4]
+            tr[i] = run_tr
+            vol[i] = run_vol
+
+        self._pref[symbol] = {
+            "base": base_cid,
+            "max": max_cid,
+            "tr": tr,
+            "vol": vol,
+        }
 
     # ------------------------------
     # Public API
     # ------------------------------
     def add_tick(self, symbol: str, t: float, p: float, q: float):
-        dq = self.ticks[symbol]
-        dq.append((t, p, q))
+        # запоминаем последний тик
+        self.last_tick[symbol] = (t, p)
 
         # update mark-segment extremes (last_min/last_max) при фиксированном mark
         seg = self._mark_seg.get(symbol)
@@ -49,7 +76,7 @@ class ClusterManager:
             if p > seg["last_max"]:
                 seg["last_max"] = p
 
-        # 1) update cluster stats
+        # 1) update cluster stats (агрегация по cid)
         cid = int(t / CLUSTER_INTERVAL)
         st = self.cluster_stats[symbol].get(cid)
         vol_usdt = p * q
@@ -58,6 +85,8 @@ class ClusterManager:
             # [t_base, p_min, p_max, trades, vol_usdt]
             self.cluster_stats[symbol][cid] = [t, p, p, 1, vol_usdt]
         else:
+            # t_base — время первого тика, обычно не меняется,
+            # но если вдруг пришёл тик с меньшим t (редко) — подстрахуем
             if t < st[0]:
                 st[0] = t
             if p < st[1]:
@@ -70,8 +99,9 @@ class ClusterManager:
         # 2) update candle + maybe ATR on close
         self._update_candle_and_atr(symbol, t, p)
 
-        # 3) evict old ticks
+        # 3) evict old clusters (по cid)
         self._evict_old(symbol, t)
+
 
     def add_mark(self, symbol: str, t: float, mark: float):
         # дедуп: если mark не изменился — игнор
@@ -88,12 +118,13 @@ class ClusterManager:
         # старт нового сегмента: mark фиксируется,
         # last_min/last_max инициализируем последним last (если есть)
         last_price = None
-        dq = self.ticks.get(symbol)
-        if dq:
-            last_price = dq[-1][1]
+        lt = self.last_tick.get(symbol)
+        if lt:
+            last_price = lt[1]
 
         if last_price is None:
             last_price = mark  # fallback
+
 
         self._mark_cur[symbol] = mark
         self._mark_seg[symbol] = {
@@ -114,32 +145,57 @@ class ClusterManager:
         self._evict_old(symbol, cur_time)
         stats = self.cluster_stats.get(symbol, {})
         return {cid: [st[0], st[1], st[2]] for cid, st in stats.items()}
+    
+    def get_last_tick(self, symbol: str):
+        return self.last_tick.get(symbol)  # (t, price) или None
 
     def get_atr(self, symbol: str):
         return self.atr_cache.get(symbol)
 
     def get_impulse_stats(self, symbol: str, ref_time: float, cur_time: float):
-        """
-        Быстро посчитать trades + vol_usdt за импульс по тикам (одно окно).
-        """
-        dq = self.ticks.get(symbol)
-        if not dq:
+        self._evict_old(symbol, cur_time)
+
+        stats = self.cluster_stats.get(symbol, {})
+        if not stats:
             return 0, 0.0
 
-        trades = 0
-        vol_usdt = 0.0
-        for t, p, q in dq:
-            if t < ref_time:
-                continue
-            if t > cur_time:
-                break
-            trades += 1
-            vol_usdt += p * q
-        return trades, vol_usdt
+        cid_from = int(ref_time / CLUSTER_INTERVAL)
+        cid_to   = int(cur_time / CLUSTER_INTERVAL)
 
-    # ------------------------------
-    # Internal helpers
-    # ------------------------------
+        # ✅ база — от реально живых кластеров, а не от "дрожащего" cutoff_time
+        base_cid = min(stats.keys())
+        max_cid  = cid_to
+
+        if max_cid < base_cid:
+            return 0, 0.0
+
+        pref = self._pref.get(symbol)
+        if (not pref) or (pref["base"] != base_cid) or (pref["max"] != max_cid):
+            self._rebuild_prefix(symbol, base_cid, max_cid)
+            pref = self._pref[symbol]
+
+        # clamp диапазона в рамки base..max
+        a = max(cid_from, base_cid)
+        b = min(cid_to, max_cid)
+        if a > b:
+            return 0, 0.0
+
+        ia = a - base_cid
+        ib = b - base_cid
+
+        tr = pref["tr"]
+        vol = pref["vol"]
+
+        right_tr = tr[ib]
+        right_vol = vol[ib]
+
+        left_tr = tr[ia - 1] if ia > 0 else 0
+        left_vol = vol[ia - 1] if ia > 0 else 0.0
+
+        return right_tr - left_tr, right_vol - left_vol
+
+
+
     def _update_candle_and_atr(self, symbol: str, ts: float, price: float):
         minute = int(ts // CANDLE_TIMEFRAME_SEC)
 
@@ -192,64 +248,21 @@ class ClusterManager:
         self.atr_cache[symbol] = sum(tr_list) / len(tr_list)
 
     def _evict_old(self, symbol: str, cur_time: float):
-        cutoff = cur_time - IMPULSE_MAX_LOOKBACK
-        dq = self.ticks[symbol]
+        cutoff_time = cur_time - IMPULSE_MAX_LOOKBACK
+        cutoff_cid = int(cutoff_time / CLUSTER_INTERVAL)
+
         stats = self.cluster_stats[symbol]
+        if not stats:
+            return
 
-        dirty_cids = set()
+        # удаляем кластеры целиком, которые полностью вне окна
+        # (по cid это быстро)
+        to_del = [cid for cid in stats.keys() if cid < cutoff_cid]
+        if to_del:
+            for cid in to_del:
+                stats.pop(cid, None)
+            self._pref.pop(symbol, None)
 
-        while dq and dq[0][0] < cutoff:
-            t_old, p_old, q_old = dq.popleft()
-            cid_old = int(t_old / CLUSTER_INTERVAL)
-
-            st = stats.get(cid_old)
-            if st is None:
-                continue
-
-            # вычитаем trades/vol инкрементально
-            st[3] -= 1
-            st[4] -= (p_old * q_old)
-
-            # если затронули экстремум/базовое время — пометим кластер на пересчёт
-            if t_old == st[0] or p_old == st[1] or p_old == st[2]:
-                dirty_cids.add(cid_old)
-
-            # если trades ушли в 0 — кластер пустой
-            if st[3] <= 0:
-                stats.pop(cid_old, None)
-
-        # пересчитываем только грязные кластера по текущему dq
-        for cid in dirty_cids:
-            self._recompute_cluster(symbol, cid)
-
-    def _recompute_cluster(self, symbol: str, cid: int):
-        dq = self.ticks[symbol]
-        stats = self.cluster_stats[symbol]
-
-        t_base = None
-        p_min = None
-        p_max = None
-        trades = 0
-        vol_usdt = 0.0
-
-        for t, p, q in dq:
-            if int(t / CLUSTER_INTERVAL) != cid:
-                continue
-
-            if t_base is None or t < t_base:
-                t_base = t
-            if p_min is None or p < p_min:
-                p_min = p
-            if p_max is None or p > p_max:
-                p_max = p
-
-            trades += 1
-            vol_usdt += p * q
-
-        if trades == 0:
-            stats.pop(cid, None)
-        else:
-            stats[cid] = [t_base, p_min, p_max, trades, vol_usdt]
 
     def get_mark_last_delta_extreme(self, symbol: str, ref_time: float, cur_time: float):
         """
