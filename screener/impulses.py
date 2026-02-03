@@ -29,8 +29,6 @@ class ImpulseDetector:
         cluster_mgr,          # <-- вместо price_history/volume_history/atr_cache
         last_alert_time,
         symbol_threshold,
-        last_price_map=None,
-        mark_price_map=None,
     ):
         now = time.time()
 
@@ -91,14 +89,11 @@ class ImpulseDetector:
         mark_extreme = None
 
         if ENABLE_MARK_DELTA:
-            # берем ЭКСТРЕМАЛЬНУЮ signed Δ% внутри окна импульса (ref_time -> cur_time)
+            # считаем, но НЕ режем импульс глобально
             mark_extreme = cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, cur_time)
-            if not mark_extreme:
-                return
+            if mark_extreme:
+                mark_delta_pct = mark_extreme["delta"]  # signed
 
-            mark_delta_pct = mark_extreme["delta"]  # signed
-            if abs(mark_delta_pct) < MARK_DELTA_PCT:
-                return
 
 
 
@@ -119,8 +114,9 @@ class ImpulseDetector:
         change_percent = (max_delta / ref_price) * 100.0
 
         reason = ["atr", "threshold", "trades"]
-        if ENABLE_MARK_DELTA:
+        if ENABLE_MARK_DELTA and (mark_delta_pct is not None):
             reason.append("mark_delta")
+
 
         return {
             "symbol": symbol,

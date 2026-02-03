@@ -134,7 +134,9 @@ class SymbolFetcher:
 
                         ok = False
                         try:
-                            ok = await self.check_order_book_volume(session, symbol)
+                            ok, bid_v, ask_v = await self.check_order_book_volume(session, symbol)
+                            d["_bid_vol"] = bid_v
+                            d["_ask_vol"] = ask_v
                         except Exception as e:
                             Logger.error(f"❌ Ошибка глубины стакана {symbol}: {e}")
                             ok = False
@@ -163,6 +165,8 @@ class SymbolFetcher:
                     # ----------------------------------------------------
                     symbol_thresholds = {}
                     volumes = {}
+                    trades24h = {}
+                    orderbook = {}
 
                     for d in sorted_final:
                         symbol = d["symbol"].lower()
@@ -170,13 +174,21 @@ class SymbolFetcher:
 
                         volumes[symbol] = volume
                         symbol_thresholds[symbol] = dynamic_impulse_threshold(volume)
+                        trades24h[symbol] = int(d.get("count", 0))
+                        orderbook[symbol] = {
+                            "bid": float(d.get("_bid_vol", 0)),
+                            "ask": float(d.get("_ask_vol", 0)),
+                        }
 
                     Logger.info(f"Всего символов после фильтров: {len(volumes)}")
 
                     return {
-                        "volumes": volumes,
-                        "thresholds": symbol_thresholds
+                    "volumes": volumes,
+                    "thresholds": symbol_thresholds,
+                    "trades24h": trades24h,
+                    "orderbook": orderbook
                     }
+
 
             except asyncio.TimeoutError:
                 Logger.error("⏳ Глобальный timeout fetch_futures_symbols()")
@@ -205,22 +217,22 @@ class SymbolFetcher:
                 data = await resp.json()
         except Exception as e:
             Logger.error(f"❌ Ошибка получения стакана для {symbol}: {e}")
-            return False
+            return False, 0.0, 0.0
 
         if "bids" not in data or "asks" not in data:
             Logger.error(f"❌ Некорректный стакан {symbol.upper()}: {data}")
-            return False
+            return False, 0.0, 0.0
 
         if not data["bids"] or not data["asks"]:
             Logger.error(f"❌ Пустой стакан {symbol.upper()}")
-            return False
+            return False, 0.0, 0.0
 
         try:
             bids = [(float(p), float(q)) for p, q in data["bids"]]
             asks = [(float(p), float(q)) for p, q in data["asks"]]
         except Exception as e:
             Logger.error(f"❌ Ошибка парсинга стакана {symbol.upper()}: {e}")
-            return False
+            return False, 0.0, 0.0
 
         price = (bids[0][0] + asks[0][0]) / 2
         lower_bound = price * (1 - ORDERBOOK_DEPTH_PERCENT)
@@ -229,4 +241,6 @@ class SymbolFetcher:
         bid_volume = sum(p * q for p, q in bids if p >= lower_bound)
         ask_volume = sum(p * q for p, q in asks if p <= upper_bound)
 
-        return bid_volume >= ORDERBOOK_MIN_BID_VOLUME and ask_volume >= ORDERBOOK_MIN_ASK_VOLUME
+        ok = bid_volume >= ORDERBOOK_MIN_BID_VOLUME and ask_volume >= ORDERBOOK_MIN_ASK_VOLUME
+        return ok, bid_volume, ask_volume
+

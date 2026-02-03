@@ -1,0 +1,33 @@
+{
+  "users": {
+    "u1": {
+      "token": "Pf1aFcvYBE1We_O5RRY6i4LfYgYU8XP0",
+      "tg_chat_id": "5902293966",
+      "filters": {
+        "exclude_symbols": [],
+        "volume_threshold": 20000000,
+        "min_trades_24h": 10000,
+        "orderbook_min_bid": 20000,
+        "orderbook_min_ask": 20000,
+        "impulse": {
+          "max_lookback": 15,
+          "min_lookback": 0.05,
+          "atr_multiplier": 1.5,
+          "p_min": 0.5,
+          "p_max": 5.0,
+          "exponent": 0.8,
+          "impulse_min_trades": 1000
+        },
+        "mark_delta": {
+          "enabled": true,
+          "pct": 1.0
+        },
+        "atr_impulse": {
+          "enabled": true
+        }
+      },
+      "created_at": 1770073882.146915,
+      "updated_at": 1770073882.1469162
+    }
+  }
+}

@@ -2,24 +2,18 @@
 import asyncio
 import aiohttp
 import time
+from typing import Optional, Tuple
 
 from logger import Logger
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
 
 class Notifier:
-    """
-    Telegram + WS outbound signals.
-
-    Раньше send_clipboard() слал символ в LAN insert app.
-    Теперь send_clipboard() = отправка события link_symbol по SignalHub (WS).
-    """
-
     def __init__(self):
         self.TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        self.chat_id = TELEGRAM_CHAT_ID
+        self.default_chat_id = TELEGRAM_CHAT_ID  # можно оставить для админа/тестов
 
-        self.telegram_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=2000)
+        self.telegram_queue: asyncio.Queue[Tuple[str, str]] = asyncio.Queue(maxsize=2000)
 
         self._session: aiohttp.ClientSession | None = None
         self._timeout = aiohttp.ClientTimeout(total=8, connect=3, sock_read=5)
@@ -31,8 +25,12 @@ class Notifier:
         self._signal_hub = signal_hub
 
     async def start(self):
+        if self._tg_task:
+            return  # уже запущено
+
         self._session = aiohttp.ClientSession(timeout=self._timeout)
         self._tg_task = asyncio.create_task(self._telegram_worker(), name="telegram_worker")
+
 
     async def close(self):
         if self._tg_task:
@@ -42,20 +40,24 @@ class Notifier:
             await self._session.close()
             self._session = None
 
-    async def send_message(self, text: str):
+    async def send_message(self, text: str, chat_id: Optional[str] = None):
+        """
+        chat_id=None -> default_chat_id (как было раньше)
+        """
+        cid = str(chat_id or self.default_chat_id)
+        if not cid:
+            return
         try:
-            self.telegram_queue.put_nowait(text)
+            self.telegram_queue.put_nowait((cid, text))
         except asyncio.QueueFull:
             Logger.warn("Telegram queue full → message dropped")
 
     async def send_clipboard(self, text: str):
         """
-        Было: отправка по локалке.
-        Стало: WS событие link_symbol для клиента (если он подключен).
+        WS событие link_symbol всем подключенным (или ниже сделаем targeted).
         """
         if not self._signal_hub:
             return
-
         try:
             await self._signal_hub.broadcast({
                 "type": "link_symbol",
@@ -67,24 +69,24 @@ class Notifier:
 
     async def _telegram_worker(self):
         while True:
-            text = await self.telegram_queue.get()
+            chat_id, text = await self.telegram_queue.get()
             try:
-                await self._send_telegram(text)
+                await self._send_telegram(chat_id, text)
             except Exception as e:
                 Logger.error(f"Telegram worker error: {e}")
             finally:
                 self.telegram_queue.task_done()
 
-    async def _send_telegram(self, text: str):
+    async def _send_telegram(self, chat_id: str, text: str):
         if not self._session:
             Logger.error("Telegram session not initialized")
             return
 
-        payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         try:
             async with self._session.post(self.TG_URL, json=payload) as resp:
                 if resp.status == 200:
-                    Logger.info(f"📨 Telegram → OK ({self.chat_id})")
+                    Logger.info(f"📨 Telegram → OK ({chat_id})")
                 else:
                     Logger.error(f"⚠ Telegram status {resp.status}: {await resp.text()}")
         except asyncio.TimeoutError:
