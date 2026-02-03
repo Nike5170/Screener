@@ -177,8 +177,15 @@ class ATRImpulseScreener:
         # 1) Если сессия уже активна — обновляем максимум и пытаемся доставить
         if sess is not None:
             if self._session_expired(sess, ts):
+                try:
+                    dur = max(ts - float(sess.get("ref_time") or ts), 0.0)
+                    mx = float(sess.get("max_change_percent") or 0.0)
+                    Logger.success(f"⚡ Impulse session END: {symbol.upper()} | dur={dur:.2f}s | max={mx:.2f}%")
+                except Exception:
+                    Logger.success(f"⚡ Impulse session END: {symbol.upper()}")
                 self.impulse_sessions.pop(symbol, None)
                 return
+
 
             self._update_session_metrics(symbol, sess, ts)
             await self._deliver_session_to_users(symbol, sess, ts)
@@ -429,6 +436,14 @@ class ATRImpulseScreener:
             "reason": sess.get("reason") or ["atr"],
         }
 
+        if not sess.get("admin_sent"):
+            try:
+                await self.notifier.send_message(message)  # chat_id=None -> default_chat_id (админ)
+                Logger.info(f"ADMIN notify: {symbol_up} (session max {payload['change_percent']:.2f}%)")
+            except Exception as e:
+                Logger.error(f"ADMIN notify error: {e}")
+            sess["admin_sent"] = True
+
         sent = sess.setdefault("sent_to_users", set())
 
         # подготовим “красивое” сообщение (как у тебя), но по данным сессии
@@ -493,6 +508,12 @@ class ATRImpulseScreener:
             # Telegram
             if user.tg_chat_id:
                 await self.notifier.send_message(message, chat_id=user.tg_chat_id)
+                
+            Logger.info(
+                f"DELIVER impulse: {symbol_up} -> user={uid} "
+                f"(tg={'yes' if user.tg_chat_id else 'no'}, ws={'yes' if self.signal_hub else 'no'}) "
+                f"max={payload['change_percent']:.2f}% trades={payload['impulse_trades']}"
+            )
 
             sent.add(uid)
 

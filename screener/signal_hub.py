@@ -132,6 +132,17 @@ class SignalHub:
 
                     ci.authed = True
                     ci.user_id = uid
+                    # после ci.authed=True / ci.user_id=uid
+                    ra = None
+                    try:
+                        ra = ws.remote_address  # (ip, port) или None
+                    except Exception:
+                        pass
+
+                    Logger.success(
+                        f"WS client authed: user_id={uid} client_id={ci.client_id} remote={ra}"
+                    )
+
                     await ws.send(json.dumps({"type": "ok", "ts": time.time(), "user_id": uid}))
                     continue
 
@@ -169,4 +180,6 @@ class SignalHub:
             pass
         finally:
             async with self._lock:
+                if ci.authed and ci.user_id:
+                    Logger.warn(f"WS client disconnected: user_id={ci.user_id} client_id={ci.client_id}")
                 self._clients.discard(ci)
