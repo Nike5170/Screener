@@ -53,52 +53,60 @@ class SignalHub:
         )
 
     async def broadcast(self, payload: Dict[str, Any]):
-        """
-        Для общих событий.
-        Сигналы по пользователям лучше слать через send_to_user().
-        """
         msg = json.dumps(payload, ensure_ascii=False)
+        ptype = (payload.get("type") or "").lower()
 
         async with self._lock:
             clients = list(self._clients)
 
         if not clients:
+            Logger.debug(f"WS broadcast: type={ptype} -> no_clients")
             return
 
+        sent_ok = 0
         dead = []
         for c in clients:
             try:
                 if not c.authed:
                     continue
                 await c.ws.send(msg)
+                sent_ok += 1
             except Exception:
                 dead.append(c)
+
+        Logger.info(f"WS broadcast: type={ptype} -> sent={sent_ok}")
 
         if dead:
             async with self._lock:
                 for c in dead:
                     self._clients.discard(c)
 
+
     async def send_to_user(self, user_id: str, payload: Dict[str, Any]):
         msg = json.dumps(payload, ensure_ascii=False)
+        ptype = (payload.get("type") or "").lower()
 
         async with self._lock:
             clients = [c for c in self._clients if c.authed and c.user_id == user_id]
 
         if not clients:
+            Logger.debug(f"WS send_to_user: user_id={user_id} type={ptype} -> no_clients")
             return
 
         dead = []
         for c in clients:
             try:
                 await c.ws.send(msg)
-            except Exception:
+                Logger.info(f"WS sent: type={ptype} user_id={user_id} client_id={c.client_id}")
+            except Exception as e:
                 dead.append(c)
+                Logger.warn(f"WS send failed: type={ptype} user_id={user_id} client_id={c.client_id} err={e}")
 
         if dead:
             async with self._lock:
                 for c in dead:
                     self._clients.discard(c)
+
 
     async def _handler(self, ws: WebSocketServerProtocol):
         ci = ClientInfo(ws=ws, client_id="unknown", authed=False, user_id=None)
@@ -150,20 +158,29 @@ class SignalHub:
                     await ws.send(json.dumps({"type": "error", "error": "unauthorized"}))
                     continue
 
+                # внутри _handler()
+
                 if t == "get_config":
+                    Logger.info(f"WS get_config: user_id={ci.user_id} client_id={ci.client_id}")
                     data = self._config_getter_for_user(ci.user_id)
                     await ws.send(json.dumps({"type": "config", "data": data}, ensure_ascii=False))
 
                 elif t == "set_config":
                     patch = msg.get("patch") or {}
+                    Logger.info(
+                        f"WS set_config: user_id={ci.user_id} client_id={ci.client_id} "
+                        f"keys={list((patch or {}).keys())}"
+                    )
                     applied = self._config_patcher_for_user(ci.user_id, patch)
                     await ws.send(json.dumps({"type": "config", "data": applied}, ensure_ascii=False))
 
                 elif t == "get_top":
                     mode = msg.get("mode", "volume24h")
                     n = int(msg.get("n", 5))
+                    Logger.info(f"WS get_top: user_id={ci.user_id} client_id={ci.client_id} mode={mode} n={n}")
                     items = await self._top_provider(mode=mode, n=n)
                     await ws.send(json.dumps({"type": "top", "mode": mode, "items": items}, ensure_ascii=False))
+
 
                 elif t == "metrics":
                     if self._metrics_sink:
