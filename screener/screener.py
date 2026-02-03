@@ -436,14 +436,6 @@ class ATRImpulseScreener:
             "reason": sess.get("reason") or ["atr"],
         }
 
-        if not sess.get("admin_sent"):
-            try:
-                await self.notifier.send_message(message)  # chat_id=None -> default_chat_id (админ)
-                Logger.info(f"ADMIN notify: {symbol_up} (session max {payload['change_percent']:.2f}%)")
-            except Exception as e:
-                Logger.error(f"ADMIN notify error: {e}")
-            sess["admin_sent"] = True
-
         sent = sess.setdefault("sent_to_users", set())
 
         # подготовим “красивое” сообщение (как у тебя), но по данным сессии
@@ -493,6 +485,16 @@ class ATRImpulseScreener:
             f"({payload['impulse_trades']} сделок)"
         )
 
+        if not sess.get("admin_sent"):
+            try:
+                await self.notifier.send_message(message)  # chat_id=None -> default_chat_id (админ)
+                Logger.info(
+                    f"ADMIN notify: {symbol_up} (session max {payload['change_percent']:.2f}%)"
+                )
+                sess["admin_sent"] = True  # ✅ ставим только при успехе
+            except Exception as e:
+                Logger.error(f"ADMIN notify error: {e}")
+                
         # рассылка по пользователям
         for uid, user in self.users.all_users().items():
             if uid in sent:
@@ -508,7 +510,7 @@ class ATRImpulseScreener:
             # Telegram
             if user.tg_chat_id:
                 await self.notifier.send_message(message, chat_id=user.tg_chat_id)
-                
+
             Logger.info(
                 f"DELIVER impulse: {symbol_up} -> user={uid} "
                 f"(tg={'yes' if user.tg_chat_id else 'no'}, ws={'yes' if self.signal_hub else 'no'}) "
