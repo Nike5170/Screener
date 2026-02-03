@@ -26,9 +26,12 @@ class ImpulseDetector:
     async def check_atr_impulse(
         self,
         symbol,
-        cluster_mgr,          # <-- вместо price_history/volume_history/atr_cache
+        cluster_mgr,
         last_alert_time,
         symbol_threshold,
+        last_price_map=None,
+        mark_price_map=None,
+        **kwargs,   # чтобы "лишние" параметры не ломали вызов
     ):
         now = time.time()
 
