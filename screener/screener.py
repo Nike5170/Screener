@@ -8,7 +8,7 @@ from notifier import Notifier
 from logger import Logger
 from datetime import datetime
 from screener.clusters import ClusterManager
-from config import ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
+from config import ENABLE_ATR_IMPULSE, ENABLE_DYNAMIC_THRESHOLD, ENABLE_MARK_DELTA, IMPULSE_FIXED_THRESHOLD_PCT
 from screener.signal_hub import SignalHub
 import math
 from users_store import UsersStore
@@ -142,8 +142,6 @@ class ATRImpulseScreener:
         self.symbol_thresholds = {}
         self.cluster_mgr = ClusterManager()
         self.users = UsersStore("users.json")
-        # active impulse session per symbol
-        self.impulse_sessions = {}  # symbol -> session dict
 
         self.impulse_detector = ImpulseDetector()
         self.ws_manager = WSManager(self.handle_trade)
@@ -167,86 +165,25 @@ class ATRImpulseScreener:
         # ЕДИНСТВЕННОЕ место, где обновляется "история"
         self.cluster_mgr.add_tick(symbol, ts, price, qty)
 
-        threshold = self.symbol_thresholds.get(symbol.lower(), 1.0)
+        threshold = self.symbol_thresholds.get(
+            symbol.lower(),
+            float(IMPULSE_FIXED_THRESHOLD_PCT),
+        )
+        if not ENABLE_ATR_IMPULSE:
+            return
 
-        # ==============================
-        #  IMPULSE SESSION LAYER
-        # ==============================
-        sess = self.impulse_sessions.get(symbol)
-
-        # 1) Если сессия уже активна — обновляем максимум и пытаемся доставить
-        if sess is not None:
-            if self._session_expired(sess, ts):
-                try:
-                    dur = max(ts - float(sess.get("ref_time") or ts), 0.0)
-                    mx = float(sess.get("max_change_percent") or 0.0)
-                    Logger.success(f"⚡ Impulse session END: {symbol.upper()} | dur={dur:.2f}s | max={mx:.2f}%")
-                except Exception:
-                    Logger.success(f"⚡ Impulse session END: {symbol.upper()}")
-                self.impulse_sessions.pop(symbol, None)
-                return
-
-
-            self._update_session_metrics(symbol, sess, ts)
-            await self._deliver_session_to_users(symbol, sess, ts)
-            return  # важно: не запускаем детектор заново
-
-        # 2) Сессии нет — проверяем старт импульса детектором (как раньше)
-        result = None
-        if ENABLE_ATR_IMPULSE:
-            result = await self.impulse_detector.check_atr_impulse(
-                symbol=symbol,
-                cluster_mgr=self.cluster_mgr,
-                last_alert_time=self.last_alert_time,   # антиспам только на старт
-                symbol_threshold=threshold,
-                last_price_map=self.last_price,
-                mark_price_map=self.mark_price,
-            )
-
+        result = await self.impulse_detector.check_atr_impulse(
+            symbol=symbol,
+            cluster_mgr=self.cluster_mgr,
+            last_alert_time=self.last_alert_time,
+            symbol_threshold=threshold,
+            last_price_map=self.last_price,
+            mark_price_map=self.mark_price,
+        )
         if not result:
             return
 
-        # 3) Старт новой сессии
-        symbol_up = symbol.upper()
-
-        ref_time = float(result["ref_time"])
-        ref_price = float(result["ref_price"])
-
-        sess = {
-            "ref_time": ref_time,
-            "ref_price": ref_price,
-
-            # стартовые значения
-            "max_change_percent": float(result.get("change_percent") or 0.0),
-            "max_price": float(result.get("cur") or price),
-            "cur_price": float(result.get("cur") or price),
-
-            "impulse_trades": int(result.get("impulse_trades") or 0),
-            "impulse_volume_usdt": float(result.get("impulse_volume_usdt") or 0.0),
-
-            # max ATR impulse стартуем с 0 и обновим ниже
-            "max_atr_impulse": 0.0,
-
-            # mark (если есть)
-            "mark_delta_pct": result.get("mark_delta_pct"),
-            "mark_extreme": result.get("mark_extreme"),
-
-            "reason": result.get("reason") or ["atr"],
-            "sent_to_users": set(),
-        }
-        self.impulse_sessions[symbol] = sess
-
-        # антиспам — только на старт сессии
-        self.last_alert_time[symbol] = time.time()
-
-        Logger.success(
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] ⚡ Impulse session START: {symbol_up}"
-        )
-
-        # обновим метрики на текущем тике и попробуем доставить
-        self._update_session_metrics(symbol, sess, ts)
-        await self._deliver_session_to_users(symbol, sess, ts)
-        return
+        await self._deliver_impulse(result, ts)
 
 
     async def run(self):
@@ -270,7 +207,10 @@ class ATRImpulseScreener:
                 # сохраняем 24h объём
                 self.symbol_24h_volume = symbols_24h_volume
                 self.symbol_thresholds = symbols_24h_volume["thresholds"]
-
+                Logger.info(
+                    f"Threshold mode: "
+                    f"{'dynamic' if ENABLE_DYNAMIC_THRESHOLD else f'fixed={IMPULSE_FIXED_THRESHOLD_PCT}%'}"
+                )
                 # создаём список символов
                 symbols = list(symbols_24h_volume["volumes"].keys())
 
@@ -361,106 +301,53 @@ class ATRImpulseScreener:
         items = sorted(vols.items(), key=lambda x: x[1], reverse=True)[:n]
         return [{"symbol": s.upper(), "value": float(v)} for s, v in items]
 
-    def _session_expired(self, sess: dict, now_ts: float) -> bool:
-        from config import IMPULSE_MAX_LOOKBACK
-        return (now_ts - float(sess["ref_time"])) > float(IMPULSE_MAX_LOOKBACK)
 
 
-    def _update_session_metrics(self, symbol: str, sess: dict, now_ts: float) -> None:
-        """
-        Обновляем максимум/метрики текущей импульс-сессии.
-        Детектор НЕ вызываем. Просто обновляем max и stats.
-        """
-        ref_price = float(sess.get("ref_price") or 0.0)
-        cur_price = float(self.last_price.get(symbol) or 0.0)
-        if ref_price <= 0 or cur_price <= 0:
-            return
-
-        # max % от ref_price по текущей цене
-        cur_change = abs(cur_price - ref_price) / ref_price * 100.0
-        if cur_change > float(sess.get("max_change_percent") or 0.0):
-            sess["max_change_percent"] = float(cur_change)
-            sess["max_price"] = float(cur_price)
-            sess["cur_price"] = float(cur_price)  # чтобы в сообщении "цена на момент отправки"
-
-        # stats по окну ref..now
-        tr, vol = self.cluster_mgr.get_impulse_stats(symbol, float(sess["ref_time"]), now_ts)
-        sess["impulse_trades"] = int(tr)
-        sess["impulse_volume_usdt"] = float(vol)
-
-        # max ATR impulse
-        atr = float(self.cluster_mgr.get_atr(symbol) or 0.0)
-
-        if atr <= 0:
-            # ATR ещё не успел посчитаться (нет свечей) — не душим импульсы
-            atr_imp = float("inf")
-        else:
-            atr_imp = abs(cur_price - ref_price) / atr
-
-        if atr_imp > float(sess.get("max_atr_impulse") or 0.0):
-            sess["max_atr_impulse"] = float(atr_imp)
-
-
-        # mark extreme (если включено)
-        from config import ENABLE_MARK_DELTA
-        if ENABLE_MARK_DELTA:
-            me = self.cluster_mgr.get_mark_last_delta_extreme(symbol, float(sess["ref_time"]), now_ts)
-            sess["mark_extreme"] = me
-            sess["mark_delta_pct"] = (me["delta"] if me else None)
-
-
-    async def _deliver_session_to_users(self, symbol: str, sess: dict, ts: float) -> None:
-        """
-        Отправляем событие тем пользователям, чей фильтр проходит
-        ПО ТЕКУЩЕМУ MAX сессии. Одному user_id — максимум 1 раз за сессию.
-        """
-        symbol_up = symbol.upper()
+    async def _deliver_impulse(self, result: dict, ts: float) -> None:
+        symbol_up = str(result["symbol"]).upper()
 
         # метрики символа из symbol_fetcher
-        vol24h = float(self.symbol_24h_volume["volumes"].get(symbol.lower(), 0))
-        trades24h = int((self.symbol_24h_volume.get("trades24h") or {}).get(symbol.lower(), 0))
-        ob = (self.symbol_24h_volume.get("orderbook") or {}).get(symbol.lower(), {}) or {}
+        vol24h = float(self.symbol_24h_volume["volumes"].get(symbol_up.lower(), 0))
+        trades24h = int((self.symbol_24h_volume.get("trades24h") or {}).get(symbol_up.lower(), 0))
+        ob = (self.symbol_24h_volume.get("orderbook") or {}).get(symbol_up.lower(), {}) or {}
 
         payload = {
             "type": "impulse",
             "exchange": "BINANCE-FUT",
             "market": "FUTURES",
             "symbol": symbol_up,
-            "change_percent": float(sess.get("max_change_percent") or 0.0),
-            "impulse_trades": int(sess.get("impulse_trades") or 0),
-            "impulse_volume_usdt": float(sess.get("impulse_volume_usdt") or 0.0),
-            "atr_impulse": float(sess.get("max_atr_impulse") or 0.0),
-            "mark_delta_pct": sess.get("mark_delta_pct"),
-            "mark_extreme": sess.get("mark_extreme"),
+            "change_percent": float(result.get("change_percent") or 0.0),
+            "impulse_trades": int(result.get("impulse_trades") or 0),
+            "impulse_volume_usdt": float(result.get("impulse_volume_usdt") or 0.0),
+            "atr_impulse": float(result.get("atr_impulse") or 0.0),
+            "mark_delta_pct": result.get("mark_delta_pct"),
+            "mark_extreme": result.get("mark_extreme"),
             "ts": float(ts),
-            "reason": sess.get("reason") or ["atr"],
+            "reason": result.get("reason") or ["atr"],
         }
 
-        sent = sess.setdefault("sent_to_users", set())
+        # данные для сообщения
+        cur_price = float(result.get("cur") or 0.0)
+        ref_price = float(result.get("ref_price") or 0.0)
+        trigger_price = float(result.get("trigger_price") or result.get("cur") or 0.0)
+        max_delta_price = float(result.get("max_delta_price") or 0.0)
 
-        # подготовим “красивое” сообщение (как у тебя), но по данным сессии
-        # Важно: ref_price/ref_time фикс, а “цена срабатывания” = цена в момент отправки
-        from datetime import datetime
-        now = float(ts)
-        ref_time = float(sess["ref_time"])
-        ref_price = float(sess["ref_price"])
-        cur_price = float(sess.get("cur_price") or self.last_price.get(symbol) or 0.0)
+        pct_from_start = float(result.get("change_percent_from_start") or 0.0)
+        pct_max_delta  = float(result.get("change_percent_max_delta") or 0.0)
 
+        atr_from_start = float(result.get("atr_from_start") or 0.0)
+        atr_max_delta  = float(result.get("atr_max_delta") or 0.0)
+
+        duration = float(result.get("duration") or 0.001)
         change_percent = float(payload["change_percent"])
-        duration = max(now - ref_time, 0.001)
-        speed_percent = change_percent / duration
+        speed_percent = change_percent / max(duration, 0.001)
 
-        atr_value = float(self.cluster_mgr.get_atr(symbol) or 0.0)
-        atr_impulse = float(payload["atr_impulse"])
-
-        # direction берём по текущей цене
         direction = (cur_price - ref_price)
         color = "🟢" if direction > 0 else "🔴"
         direction_text = "Памп" if direction > 0 else "Дамп"
 
         # mark block
         mark_block = ""
-        from config import ENABLE_MARK_DELTA
         if ENABLE_MARK_DELTA:
             mark_trigger = payload.get("mark_delta_pct")
             mark_extreme = payload.get("mark_extreme")
@@ -468,54 +355,54 @@ class ATRImpulseScreener:
                 mark_block += f"🧷 Δ Mark-Last (текущий экстремум): {fmt_signed_pct(mark_trigger)}\n"
             if mark_extreme:
                 mark_block += (
-                    f"📈 Δ Mark-Last max (сессия): {fmt_signed_pct(mark_extreme['delta'])} "
+                    f"📈 Δ Mark-Last max (окно): {fmt_signed_pct(mark_extreme['delta'])} "
                     f"(mark updates: {mark_extreme['mark_updates']})\n"
                 )
 
         message = (
             f"{color} <code>{symbol_up}</code> {direction_text}\n"
-            f"Max изменение: {change_percent:.2f}% за {duration:.2f} сек\n\n"
-            f"📍 Начальная цена импульса: {ref_price}\n"
-            f"🚀 Цена (момент отправки): {cur_price}\n\n"
-            f"{mark_block}\n"
+            f"Изменение: {change_percent:.2f}% за {duration:.2f} сек\n\n"
+            f"🚀 Цена: {cur_price}\n\n"
+
             f"Скорость: {speed_percent:.3f}%/сек\n"
-            f"📐 Амплитуда импульса: {atr_impulse:.2f} ATR\n"
+            f"📐 Амплитуда: {float(payload['atr_impulse']):.2f} ATR\n"
+            
+
+            f"🎯 Цена срабатывания: {trigger_price}\n"
+            f"📍 Цена начала импульса: {ref_price}\n"
+            f"🏁 Цена max дельты: {max_delta_price}\n\n"
+
+            f"📈 % от начала: {pct_from_start:.2f}%\n"
+            f"📈 % max дельты: {pct_max_delta:.2f}%\n\n"
+
+            f"📐 ATR от начала: {atr_from_start:.2f} ATR\n"
+            f"📐 ATR max дельты: {atr_max_delta:.2f} ATR\n\n"
+
+            f"{mark_block}\n"
             f"📊 Объём 24ч: {fmt_compact_usdt(vol24h)} USDT\n"
-            f"🔥 Объём за импульс: {fmt_compact_usdt(payload['impulse_volume_usdt'])} USDT "
+            f"🔥 Объём импульса: {fmt_compact_usdt(payload['impulse_volume_usdt'])} USDT "
             f"({payload['impulse_trades']} сделок)"
         )
 
-        if not sess.get("admin_sent"):
-            try:
-                await self.notifier.send_message(message)  # chat_id=None -> default_chat_id (админ)
-                Logger.info(
-                    f"ADMIN notify: {symbol_up} (session max {payload['change_percent']:.2f}%)"
-                )
-                sess["admin_sent"] = True  # ✅ ставим только при успехе
-            except Exception as e:
-                Logger.error(f"ADMIN notify error: {e}")
-                
-        # рассылка по пользователям
-        for uid, user in self.users.all_users().items():
-            if uid in sent:
-                continue
+        # админ
+        await self.notifier.send_message(message)
+        Logger.info(f"ADMIN notify: {symbol_up} ({change_percent:.2f}%)")
 
+        # пользователи (без sent_to_users — антиспам уже в impulses.py)
+        for uid, user in self.users.all_users().items():
             if not user_match_impulse(user.cfg, payload, vol24h, trades24h, ob):
                 continue
 
-            # WS
             if self.signal_hub:
                 await self.signal_hub.send_to_user(uid, payload)
 
-            # Telegram
             if user.tg_chat_id:
                 await self.notifier.send_message(message, chat_id=user.tg_chat_id)
 
             Logger.info(
                 f"DELIVER impulse: {symbol_up} -> user={uid} "
                 f"(tg={'yes' if user.tg_chat_id else 'no'}, ws={'yes' if self.signal_hub else 'no'}) "
-                f"max={payload['change_percent']:.2f}% trades={payload['impulse_trades']}"
+                f"chg={payload['change_percent']:.2f}% trades={payload['impulse_trades']}"
             )
 
-            sent.add(uid)
 

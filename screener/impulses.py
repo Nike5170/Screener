@@ -115,6 +115,16 @@ class ImpulseDetector:
         direction = cur_price - ref_price
         duration = max(cur_time - ref_time, IMPULSE_MIN_LOOKBACK)
         change_percent = (max_delta / ref_price) * 100.0
+        # амплитуда импульса в ATR
+        atr_impulse = abs(cur_price - ref_price) / atr if atr else 0.0
+        # моментальная дельта (от начала -> текущая цена)
+        delta_abs = abs(cur_price - ref_price)
+        change_percent_from_start = (delta_abs / ref_price) * 100.0
+        atr_from_start = (delta_abs / atr) if atr else 0.0
+
+        # пик дельты в окне (от начала -> самый дальний кластерный экстремум)
+        change_percent_max_delta = (max_delta / ref_price) * 100.0
+        atr_max_delta = (max_delta / atr) if atr else 0.0
 
         reason = ["atr", "threshold", "trades"]
         if ENABLE_MARK_DELTA and (mark_delta_pct is not None):
@@ -123,19 +133,35 @@ class ImpulseDetector:
 
         return {
             "symbol": symbol,
-            "cur": cur_price,
-            "ref_price": ref_price,
-            "change_percent": round(change_percent, 3),
+
+            # цены
+            "trigger_price": cur_price,     # цена срабатывания (момент отправки)
+            "ref_price": ref_price,         # цена начала импульса
+            "max_delta_price": max_delta_price,  # цена (точка), дающая max_delta (экстремум окна)
+
+            # проценты
+            "change_percent_from_start": round(change_percent_from_start, 3),
+            "change_percent_max_delta": round(change_percent_max_delta, 3),
+
+            # ATR-амплитуды
+            "atr_impulse": round(atr_impulse, 3),
+            "atr_from_start": round(atr_from_start, 3),
+            "atr_max_delta": round(atr_max_delta, 3),
+
+            # оставить старое поле (если где-то используется)
+            "change_percent": round(change_percent_max_delta, 3),
+
             "ref_time": ref_time,
             "duration": duration,
             "direction": direction,
             "threshold": symbol_threshold,
             "atr_percent": (atr / cur_price) * 100.0,
+
             "max_delta": max_delta,
-            "max_delta_price": max_delta_price,
             "impulse_trades": impulse_trades,
             "impulse_volume_usdt": impulse_volume_usdt,
+
             "mark_delta_pct": round(mark_delta_pct, 3) if mark_delta_pct is not None else None,
-            "mark_extreme": mark_extreme,  # dict: {"delta","abs","mark_updates"} или None
+            "mark_extreme": mark_extreme,
             "reason": reason,
         }

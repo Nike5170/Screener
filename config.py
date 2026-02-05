@@ -47,7 +47,8 @@ IMPULSE_P_MIN = 0.7
 IMPULSE_P_MAX = 2.5
 # чем меньшне значение, тем больше импульсов детектится, кривая смещается в сторону меньших объёмов
 IMPULSE_EXPONENT = 0.8
-
+ENABLE_DYNAMIC_THRESHOLD = False 
+IMPULSE_FIXED_THRESHOLD_PCT = 1.0
 # --- API ---
 BINANCE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_24HR_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"

@@ -17,7 +17,10 @@ from config import (
     IMPULSE_VOL_MAX,
     IMPULSE_P_MIN,
     IMPULSE_P_MAX,
-    IMPULSE_EXPONENT
+    IMPULSE_EXPONENT,
+    ENABLE_DYNAMIC_THRESHOLD,
+    IMPULSE_FIXED_THRESHOLD_PCT,
+
 )
 from logger import Logger
 
@@ -173,7 +176,11 @@ class SymbolFetcher:
                         volume = float(d.get("quoteVolume", 0))
 
                         volumes[symbol] = volume
-                        symbol_thresholds[symbol] = dynamic_impulse_threshold(volume)
+                        if ENABLE_DYNAMIC_THRESHOLD:
+                            symbol_thresholds[symbol] = dynamic_impulse_threshold(volume)
+                        else:
+                            symbol_thresholds[symbol] = float(IMPULSE_FIXED_THRESHOLD_PCT)
+
                         trades24h[symbol] = int(d.get("count", 0))
                         orderbook[symbol] = {
                             "bid": float(d.get("_bid_vol", 0)),
