@@ -1,7 +1,7 @@
 # screener/impulses.py
-import time
 
-from LastRelease.Clouser.utils import now
+
+import time
 from config import (
     IMPULSE_MAX_LOOKBACK,
     IMPULSE_MIN_LOOKBACK,
