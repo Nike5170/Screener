@@ -111,20 +111,6 @@ def user_match_impulse(user_cfg: dict, payload: dict, vol24h: float, trades24h: 
     if int(payload.get("impulse_trades") or 0) < impulse_min_trades:
         return False
 
-    # динамический порог по % для юзера
-    p_min = float(imp.get("p_min") or 0.5)
-    p_max = float(imp.get("p_max") or 5.0)
-    exponent = float(imp.get("exponent") or 0.8)
-    # v_min = user volume_threshold, v_max фикс 5B
-    user_thr = dyn_threshold(vol24h, v_thr, 5_000_000_000, p_min, p_max, exponent)
-    if float(payload.get("change_percent") or 0.0) < user_thr:
-        return False
-
-    # ATR multiplier фильтруем по atr_impulse (амплитуда в ATR)
-    atr_mult = float(imp.get("atr_multiplier") or 2.0)
-    if float(payload.get("atr_impulse") or 0.0) < atr_mult:
-        return False
-
     # mark_delta pct фильтруем, если включено
     if mark_enabled:
         md = user_cfg.get("mark_delta") or {}
