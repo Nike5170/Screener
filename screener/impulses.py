@@ -1,6 +1,7 @@
 # screener/impulses.py
 import time
 
+from LastRelease.Clouser.utils import now
 from config import (
     IMPULSE_MAX_LOOKBACK,
     IMPULSE_MIN_LOOKBACK,
@@ -106,12 +107,14 @@ class ImpulseDetector:
             return
 
         self.alert_times.append(now)
-        burst = [t for t in self.alert_times if now - t <= ANTI_SPAM_BURST_WINDOW]
+        self.alert_times = [t for t in self.alert_times if now - t <= ANTI_SPAM_BURST_WINDOW]
+        burst = self.alert_times
+
         if len(burst) >= ANTI_SPAM_BURST_COUNT:
             self.silence_until = now + ANTI_SPAM_SILENCE
             Logger.warn("≥5 сигналов за 30 сек — тишина 30 сек")
             return
-
+        last_alert_time[symbol] = now
         direction = cur_price - ref_price
         duration = max(cur_time - ref_time, IMPULSE_MIN_LOOKBACK)
         change_percent = (max_delta / ref_price) * 100.0
