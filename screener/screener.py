@@ -313,13 +313,14 @@ class ATRImpulseScreener:
         }
 
         # данные для сообщения
-        cur_price = float(result.get("cur") or 0.0)
+        
         ref_price = float(result.get("ref_price") or 0.0)
         trigger_price = float(result.get("trigger_price") or result.get("cur") or 0.0)
         max_delta_price = float(result.get("max_delta_price") or 0.0)
-
+        cur_price = trigger_price
         pct_from_start = float(result.get("change_percent_from_start") or 0.0)
         pct_max_delta  = float(result.get("change_percent_max_delta") or 0.0)
+        max_delta_time = result.get("max_delta_time")
 
         atr_from_start = float(result.get("atr_from_start") or 0.0)
         atr_max_delta  = float(result.get("atr_max_delta") or 0.0)
@@ -328,7 +329,7 @@ class ATRImpulseScreener:
         change_percent = float(payload["change_percent"])
         speed_percent = change_percent / max(duration, 0.001)
 
-        direction = (cur_price - ref_price)
+        direction = cur_price - ref_price
         color = "🟢" if direction > 0 else "🔴"
         direction_text = "Памп" if direction > 0 else "Дамп"
 
@@ -353,7 +354,7 @@ class ATRImpulseScreener:
             f"Скорость: {speed_percent:.3f}%/сек\n"
             f"📐 Амплитуда: {float(payload['atr_impulse']):.2f} ATR\n"
             
-
+            f"⏱️ Время max дельты: {f'{max_delta_time:.2f} сек' if max_delta_time is not None else 'N/A'}\n"
             f"🎯 Цена срабатывания: {trigger_price}\n"
             f"📍 Цена начала импульса: {ref_price}\n"
             f"🏁 Цена max дельты: {max_delta_price}\n\n"

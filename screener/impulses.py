@@ -1,6 +1,3 @@
-# screener/impulses.py
-
-
 import time
 from config import (
     IMPULSE_MAX_LOOKBACK,
@@ -44,7 +41,7 @@ class ImpulseDetector:
 
 
         cluster_extremes = cluster_mgr.get_extremes(symbol, cur_time)
-        if len(cluster_extremes) < 3:
+        if len(cluster_extremes) < 2:
             return
 
         clustered_prices = []
@@ -62,7 +59,7 @@ class ImpulseDetector:
         max_delta = 0.0
         max_delta_price = None
         impulse_found = False
-
+        max_delta_time = None
         # 1) базовый детект: ATR + threshold
         for t, p in reversed(clustered_prices):
             if cur_time - t > IMPULSE_MAX_LOOKBACK:
@@ -77,9 +74,11 @@ class ImpulseDetector:
                 ref_price = p
                 ref_time = t
 
+
             if delta_abs > max_delta:
                 max_delta = delta_abs
                 max_delta_price = p
+                max_delta_time = t
 
         if not impulse_found or ref_time is None or ref_price is None:
             return
@@ -167,4 +166,6 @@ class ImpulseDetector:
             "mark_delta_pct": round(mark_delta_pct, 3) if mark_delta_pct is not None else None,
             "mark_extreme": mark_extreme,
             "reason": reason,
+            "max_delta_time": max_delta_time,
+
         }

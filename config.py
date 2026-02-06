@@ -21,7 +21,7 @@ ANTI_SPAM_BURST_COUNT = 5         # сигналов
 ANTI_SPAM_BURST_WINDOW = 30       # окно сек
 ANTI_SPAM_SILENCE = 30 
 
-CLUSTER_INTERVAL = 0.1     # секунды
+CLUSTER_INTERVAL = 0.05     # секунды
 
 # ATR
 ATR_PERIOD = 14
@@ -65,7 +65,7 @@ CLIPBOARD_RETRY_BACKOFF = 2
 STAT_RISE_THRESHOLD = 1.0   # % роста после импульса
 STAT_FALL_THRESHOLD = 0.5   # % отката после импульса
 
-IMPULSE_MIN_TRADES = 1000
+IMPULSE_MIN_TRADES = 100
 
 MARK_DELTA_PCT = 0.5
 ENABLE_ATR_IMPULSE = True
