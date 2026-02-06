@@ -221,7 +221,7 @@ class SymbolFetcher:
     #                Проверка стакана
     # ============================================================
     async def check_order_book_volume(self, session, symbol):
-        url_depth = f"{BINANCE_DEPTH_URL}?symbol={symbol.upper()}&limit=250"
+        url_depth = f"{BINANCE_DEPTH_URL}?symbol={symbol.upper()}&limit=500"
         try:
             async with session.get(url_depth) as resp:
                 data = await resp.json()
