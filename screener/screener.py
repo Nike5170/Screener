@@ -217,7 +217,7 @@ class ATRImpulseScreener:
                 # Запуск WS для новых символов
                 for symbol in symbols:
                     if symbol not in self.active_ws_tasks:
-                        Logger.info(f"Запущен WebSocket для {symbol}")
+                        #Logger.info(f"Запущен WebSocket для {symbol}")
                         self.ws_manager.start_task(symbol)
                         self.active_ws_tasks[symbol] = True
 

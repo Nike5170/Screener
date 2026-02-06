@@ -10,7 +10,7 @@ import copy
 DEFAULT_USERS_PATH = "users.json"
 
 ALLOWED_FILTERS = {
-    "volume_threshold": [20e6, 50e6, 100e6, 200e6, 500e6],
+    "volume_threshold": [10e6, 50e6, 100e6, 200e6, 500e6],
     "min_trades_24h": [10_000, 50_000, 100_000, 200_000],
     "orderbook_min_bid": [20_000, 50_000, 100_000, 200_000],
     "orderbook_min_ask": [20_000, 50_000, 100_000, 200_000],
@@ -143,7 +143,7 @@ class UsersStore:
         default_filters = {
             "exclude_symbols": [],
 
-            "volume_threshold": 20_000_000,
+            "volume_threshold": 10_000_000,
             "min_trades_24h": 10_000,
             "orderbook_min_bid": 20_000,
             "orderbook_min_ask": 20_000,
@@ -152,7 +152,7 @@ class UsersStore:
             "impulse_min_trades": 1000
             },
 
-            "mark_delta": {"enabled": True, "pct": 1.0},
+            "mark_delta": {"enabled": True, "pct": 0.5},
             "atr_impulse": {"enabled": True}
         }
 

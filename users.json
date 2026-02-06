@@ -5,7 +5,7 @@
       "tg_chat_id": "5902293966",
       "filters": {
         "exclude_symbols": [],
-        "volume_threshold": 20000000,
+        "volume_threshold": 10000000,
         "min_trades_24h": 10000,
         "orderbook_min_bid": 20000,
         "orderbook_min_ask": 20000,
@@ -14,7 +14,7 @@
         },
         "mark_delta": {
           "enabled": true,
-          "pct": 1.0
+          "pct": 0.5
         },
         "atr_impulse": {
           "enabled": true
@@ -25,3 +25,4 @@
     }
   }
 }
+

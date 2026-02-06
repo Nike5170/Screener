@@ -1,4 +1,3 @@
-# screener/clusters.py
 from collections import defaultdict, deque
 
 from config import (
@@ -10,31 +9,18 @@ from config import (
 
 
 class ClusterManager:
-    """
-    Единый "тик-стор" на символ:
-      - cluster_stats: cid -> [t_base, p_min, p_max, trades, vol_usdt]
-      - 1m свечи -> ATR (кеш atr_cache)
-
-    Важно: мы не держим отдельные price_history / volume_history.
-    """
-
     def __init__(self):
-        # ❌ больше НЕ храним ticks deque
-        self.cluster_stats = defaultdict(dict)  # symbol -> {cid: [t_base,p_min,p_max,trades,vol_usdt]}
-        self._pref = {}  # symbol -> {"base": int, "max": int, "tr": list[int], "vol": list[float], "built_to": int}
+        self.cluster_stats = defaultdict(dict)  
+        self._pref = {} 
 
-        # Последний тик (чтобы impulses.py мог взять cur_time/cur_price без ticks)
-        self.last_tick = {}  # symbol -> (t, price)
+        self.last_tick = {}
+        self.current_candle = {} 
+        self.candles = defaultdict(lambda: deque(maxlen=ATR_PERIOD))  
+        self.atr_cache = {} 
 
-        # ATR via 1m candles
-        self.current_candle = {}  # symbol -> {"minute","open","high","low","close"}
-        self.candles = defaultdict(lambda: deque(maxlen=ATR_PERIOD))  # symbol -> deque[candle]
-        self.atr_cache = {}  # symbol -> float
-
-        # --- Mark сегменты (sample-and-hold) ---
-        self._mark_cur = {}  # symbol -> current mark float
-        self._mark_seg = {}  # symbol -> {"start","mark","last_min","last_max","end"}
-        self._mark_segs = defaultdict(lambda: deque())  # symbol -> deque[seg]
+        self._mark_cur = {}  
+        self._mark_seg = {}  
+        self._mark_segs = defaultdict(lambda: deque()) 
 
     def _rebuild_prefix(self, symbol: str, base_cid: int, max_cid: int):
         stats = self.cluster_stats.get(symbol, {})
