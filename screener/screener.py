@@ -1,6 +1,5 @@
 import asyncio
 import time
-from unittest import result
 from screener.impulses import ImpulseDetector
 from screener.ws_manager import WSManager
 from screener.symbol_fetcher import SymbolFetcher
@@ -137,8 +136,6 @@ class ATRImpulseScreener:
         self.mark_price = {}
         self.signal_hub = None
         self._signalhub_server = None
-        # Чтобы отслеживать активные WS-задания
-        self.active_ws_tasks = {}
 
 
     async def handle_trade(self, symbol, data):
@@ -175,6 +172,7 @@ class ATRImpulseScreener:
     async def run(self):
         await self.notifier.start()
         await self.notifier.send_message("✅ ATR-скринер запущен.")
+        await self.ws_manager.start()
 
         self.signal_hub = SignalHub(
             auth_resolver=self.users.resolve_token,
@@ -213,20 +211,7 @@ class ATRImpulseScreener:
 
                 Logger.info(f"Всего символов после фильтров: {len(symbols)}")
                 #Logger.info(f"Символы:\n{', '.join(symbols)}")
-
-                # Запуск WS для новых символов
-                for symbol in symbols:
-                    if symbol not in self.active_ws_tasks:
-                        #Logger.info(f"Запущен WebSocket для {symbol}")
-                        self.ws_manager.start_task(symbol)
-                        self.active_ws_tasks[symbol] = True
-
-                # Остановка WS для неактивных символов
-                to_remove = [s for s in self.active_ws_tasks if s not in symbols]
-                for s in to_remove:
-                    self.ws_manager.stop_task(s)
-                    del self.active_ws_tasks[s]
-
+                await self.ws_manager.set_symbols(symbols)
                 await asyncio.sleep(3600)
 
         finally:
@@ -235,9 +220,7 @@ class ATRImpulseScreener:
 
     async def close(self):
         # стопнуть все binance ws таски
-        for s in list(self.active_ws_tasks.keys()):
-            self.ws_manager.stop_task(s)
-            self.active_ws_tasks.pop(s, None)
+        await self.ws_manager.stop()
 
         # закрыть signalhub server
         if self._signalhub_server is not None:
