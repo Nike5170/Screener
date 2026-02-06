@@ -20,6 +20,8 @@ from config import (
     IMPULSE_EXPONENT,
     ENABLE_DYNAMIC_THRESHOLD,
     IMPULSE_FIXED_THRESHOLD_PCT,
+    ORDERBOOK_REQUEST_DELAY,
+
 
 )
 from logger import Logger
@@ -138,6 +140,7 @@ class SymbolFetcher:
                         ok = False
                         try:
                             ok, bid_v, ask_v = await self.check_order_book_volume(session, symbol)
+                            await asyncio.sleep(ORDERBOOK_REQUEST_DELAY)
                             d["_bid_vol"] = bid_v
                             d["_ask_vol"] = ask_v
                         except Exception as e:
@@ -218,7 +221,7 @@ class SymbolFetcher:
     #                Проверка стакана
     # ============================================================
     async def check_order_book_volume(self, session, symbol):
-        url_depth = f"{BINANCE_DEPTH_URL}?symbol={symbol.upper()}&limit=500"
+        url_depth = f"{BINANCE_DEPTH_URL}?symbol={symbol.upper()}&limit=250"
         try:
             async with session.get(url_depth) as resp:
                 data = await resp.json()
