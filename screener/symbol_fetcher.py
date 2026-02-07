@@ -99,7 +99,7 @@ class SymbolFetcher:
                 try:
                     filtered_by_volume = [
                         d for d in data
-                        if d["symbol"].lower() in active_symbols
+                        if d["symbol"] in active_symbols
                         and float(d.get("quoteVolume", 0)) >= VOLUME_THRESHOLD
                     ]
                 except Exception as e:
