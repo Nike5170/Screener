@@ -319,10 +319,10 @@ class ATRImpulseScreener:
         atr_from_start = float(result.get("atr_from_start") or 0.0)
         atr_max_delta  = float(result.get("atr_max_delta") or 0.0)
 
-        duration = float(result.get("duration") or 0.001)
-        change_percent = float(payload["change_percent"])
-        speed_percent = change_percent / max(duration, 0.001)
-
+        duration = float(result.get("duration") or 0.0)
+        change_percent = float(pct_from_start)  # для строки "Изменение" логичнее % от начала
+        speed_percent = abs(change_percent) / max(duration, float(CLUSTER_INTERVAL))
+ 
         direction = cur_price - ref_price
         color = "🟢" if direction > 0 else "🔴"
         direction_text = "Памп" if direction > 0 else "Дамп"

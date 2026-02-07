@@ -1,5 +1,6 @@
 
 # screener/impulses.py
+from typing import Optional
 import time
 from config import (
     IMPULSE_MAX_CLUSTERS,
@@ -34,19 +35,19 @@ class ImpulseDetector:
         cur_price = cluster_mgr.get_last_price(symbol)
         if not cur_price:
             return
-
+        interval = float(cluster_mgr_interval())
 
         atr = cluster_mgr.get_atr(symbol)
         if not atr:
             return
 
         # идём назад по кластерам
-        ref_cid = None
-        ref_price = None
+        ref_cid: Optional[int] = None
+        ref_price: Optional[float] = None
 
         max_delta = 0.0
-        max_delta_price = None
-        max_delta_cid = None
+        max_delta_price: Optional[float] = None
+        max_delta_cid: Optional[int] = None
 
         clusters_checked = 0
 
@@ -74,6 +75,9 @@ class ImpulseDetector:
 
         if ref_cid is None or ref_price is None:
             return
+        duration = ((int(last_closed_cid) + 1) - int(ref_cid)) * interval
+        if duration <= 0:
+            duration = interval
 
         # trades/volume по диапазону cid (без отдельного prefix-массива — просто суммируем 300 кластеров, это редко и дёшево)
         # (Если захочешь ещё быстрее — сделаем prefix-sum по ring на закрытии кластеров)
@@ -90,8 +94,8 @@ class ImpulseDetector:
         mark_extreme = None
         if ENABLE_MARK_DELTA:
             # ref_time/cur_time грубо восстанавливаем по cid
-            ref_time = ref_cid * cluster_mgr_interval()
-            cur_time = (last_closed_cid + 1) * cluster_mgr_interval()
+            ref_time = ref_cid * interval
+            cur_time = (last_closed_cid + 1) * interval
             mark_extreme = cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, cur_time)
             if mark_extreme:
                 mark_delta_pct = mark_extreme["delta"]
@@ -112,7 +116,11 @@ class ImpulseDetector:
 
         # метрики
         change_percent_from_start = abs(cur_price - ref_price) / ref_price * 100.0
-        change_percent_max_delta = (max_delta / ref_price) * 100.0
+        if max_delta_price and max_delta_price > 0:
+            change_percent_max_delta = abs(cur_price - max_delta_price) / max_delta_price * 100.0
+        else:
+            change_percent_max_delta = (max_delta / ref_price) * 100.0
+
         atr_from_start = abs(cur_price - ref_price) / atr
         atr_max_delta = max_delta / atr
 
@@ -125,6 +133,10 @@ class ImpulseDetector:
             "trigger_price": cur_price,
             "ref_price": ref_price,
             "max_delta_price": max_delta_price,
+            "ref_cid": int(ref_cid),
+            "max_delta_cid": int(max_delta_cid) if max_delta_cid is not None else None,
+            "last_closed_cid": int(last_closed_cid),
+            "duration": float(duration),
             "change_percent_from_start": round(change_percent_from_start, 3),
             "change_percent_max_delta": round(change_percent_max_delta, 3),
             "atr_impulse": round(atr_from_start, 3),  # текущая амплитуда
