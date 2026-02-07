@@ -10,7 +10,7 @@
         "orderbook_min_bid": 20000,
         "orderbook_min_ask": 20000,
         "impulse": {
-          "impulse_min_trades": 1000
+          "impulse_min_trades": 100
         },
         "mark_delta": {
           "enabled": true,

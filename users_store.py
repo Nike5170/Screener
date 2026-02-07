@@ -14,7 +14,7 @@ ALLOWED_FILTERS = {
     "min_trades_24h": [10_000, 50_000, 100_000, 200_000],
     "orderbook_min_bid": [20_000, 50_000, 100_000, 200_000],
     "orderbook_min_ask": [20_000, 50_000, 100_000, 200_000],
-    "impulse.impulse_min_trades": [1000, 2000],
+    "impulse.impulse_min_trades": [100, 500, 1000],
     "mark_delta.pct": [0.5, 1.0, 2.0],
 }
 def _now() -> float:
@@ -149,7 +149,7 @@ class UsersStore:
             "orderbook_min_ask": 20_000,
 
             "impulse": {
-            "impulse_min_trades": 1000
+            "impulse_min_trades": 100
             },
 
             "mark_delta": {"enabled": True, "pct": 0.5},

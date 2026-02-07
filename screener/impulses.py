@@ -1,15 +1,16 @@
+
+# screener/impulses.py
 import time
 from config import (
-    IMPULSE_MAX_LOOKBACK,
-    IMPULSE_MIN_LOOKBACK,
+    IMPULSE_MAX_CLUSTERS,
+    IMPULSE_MIN_CLUSTERS,
     ATR_MULTIPLIER,
+    IMPULSE_MIN_TRADES,
+    ENABLE_MARK_DELTA,
     ANTI_SPAM_PER_SYMBOL,
     ANTI_SPAM_BURST_COUNT,
     ANTI_SPAM_BURST_WINDOW,
     ANTI_SPAM_SILENCE,
-    IMPULSE_MIN_TRADES,
-    ENABLE_MARK_DELTA,
-    MARK_DELTA_PCT,
 )
 from logger import Logger
 
@@ -19,153 +20,126 @@ class ImpulseDetector:
         self.alert_times = []
         self.silence_until = 0
 
-# внутри screener/impulses.py
-
-    async def check_atr_impulse(
+    async def check_on_cluster(
         self,
-        symbol,
+        symbol: str,
+        last_closed_cid: int,
         cluster_mgr,
-        last_alert_time,
-        symbol_threshold,
-        last_price_map=None,
-        mark_price_map=None,
-        **kwargs,   # чтобы "лишние" параметры не ломали вызов
+        last_alert_time: dict,
+        symbol_threshold: float,
     ):
         now = time.time()
 
-        lt = cluster_mgr.get_last_tick(symbol)
-        if not lt:
+        # текущая цена = последняя известная (last_price из ClusterManager state)
+        cur_price = cluster_mgr.get_last_price(symbol)
+        if not cur_price:
             return
 
-        cur_time, cur_price = lt
-
-
-        cluster_extremes = cluster_mgr.get_extremes(symbol, cur_time)
-        if len(cluster_extremes) < 2:
-            return
-
-        clustered_prices = []
-        for cid in sorted(cluster_extremes):
-            t_base, p_min, p_max = cluster_extremes[cid]
-            clustered_prices.append((t_base, p_min))
-            clustered_prices.append((t_base, p_max))
 
         atr = cluster_mgr.get_atr(symbol)
         if not atr:
             return
 
-        ref_time = None
+        # идём назад по кластерам
+        ref_cid = None
         ref_price = None
+
         max_delta = 0.0
         max_delta_price = None
-        impulse_found = False
-        max_delta_time = None
-        # 1) базовый детект: ATR + threshold
-        for t, p in reversed(clustered_prices):
-            if cur_time - t > IMPULSE_MAX_LOOKBACK:
-                break
+        max_delta_cid = None
 
-            delta = cur_price - p
-            delta_abs = abs(delta)
-            delta_percent = abs(delta / p) * 100.0
+        clusters_checked = 0
 
-            if (not impulse_found) and (delta_abs >= ATR_MULTIPLIER * atr) and (delta_percent >= symbol_threshold):
-                impulse_found = True
-                ref_price = p
-                ref_time = t
+        for c in cluster_mgr.iter_recent(symbol, last_closed_cid, IMPULSE_MAX_CLUSTERS):
+            clusters_checked += 1
 
+            # берём обе стороны экстремума кластера
+            for p in (c.p_min, c.p_max):
+                if p <= 0:
+                    continue
+                delta = cur_price - p
+                da = abs(delta)
+                dp = abs(delta / p) * 100.0
 
-            if delta_abs > max_delta:
-                max_delta = delta_abs
-                max_delta_price = p
-                max_delta_time = t
+                if da > max_delta:
+                    max_delta = da
+                    max_delta_price = p
+                    max_delta_cid = c.cid
 
-        if not impulse_found or ref_time is None or ref_price is None:
+                if ref_cid is None:
+                    # первый момент, когда выполняются условия
+                    if (clusters_checked >= IMPULSE_MIN_CLUSTERS) and (da >= ATR_MULTIPLIER * atr) and (dp >= symbol_threshold):
+                        ref_cid = c.cid
+                        ref_price = p
+
+        if ref_cid is None or ref_price is None:
             return
 
-        # 2) доп-проверки: trades + volume (из cluster_mgr)
-        impulse_trades, impulse_volume_usdt = cluster_mgr.get_impulse_stats(symbol, ref_time, cur_time)
-        if impulse_trades < IMPULSE_MIN_TRADES:
+        # trades/volume по диапазону cid (без отдельного prefix-массива — просто суммируем 300 кластеров, это редко и дёшево)
+        # (Если захочешь ещё быстрее — сделаем prefix-sum по ring на закрытии кластеров)
+        tr_sum = 0
+        vol_sum = 0.0
+        for c in cluster_mgr.iter_recent(symbol, last_closed_cid, last_closed_cid - ref_cid + 1):
+            tr_sum += int(c.trades)
+            vol_sum += float(c.volume)
+
+        if tr_sum < IMPULSE_MIN_TRADES:
             return
 
         mark_delta_pct = None
         mark_extreme = None
-
         if ENABLE_MARK_DELTA:
-            # считаем, но НЕ режем импульс глобально
+            # ref_time/cur_time грубо восстанавливаем по cid
+            ref_time = ref_cid * cluster_mgr_interval()
+            cur_time = (last_closed_cid + 1) * cluster_mgr_interval()
             mark_extreme = cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, cur_time)
             if mark_extreme:
-                mark_delta_pct = mark_extreme["delta"]  # signed
+                mark_delta_pct = mark_extreme["delta"]
 
-
-
-
-        # 3) антиспам — только если все условия прошли
+        # антиспам
         last_alert = last_alert_time.get(symbol, 0)
-        if now - last_alert < ANTI_SPAM_PER_SYMBOL or now < self.silence_until:
+        if (now - last_alert) < ANTI_SPAM_PER_SYMBOL or now < self.silence_until:
             return
 
         self.alert_times.append(now)
         self.alert_times = [t for t in self.alert_times if now - t <= ANTI_SPAM_BURST_WINDOW]
-        burst = self.alert_times
-
-        if len(burst) >= ANTI_SPAM_BURST_COUNT:
+        if len(self.alert_times) >= ANTI_SPAM_BURST_COUNT:
             self.silence_until = now + ANTI_SPAM_SILENCE
             Logger.warn("≥5 сигналов за 30 сек — тишина 30 сек")
             return
-        last_alert_time[symbol] = now
-        direction = cur_price - ref_price
-        duration = max(cur_time - ref_time, IMPULSE_MIN_LOOKBACK)
-        change_percent = (max_delta / ref_price) * 100.0
-        # амплитуда импульса в ATR
-        atr_impulse = abs(cur_price - ref_price) / atr if atr else 0.0
-        # моментальная дельта (от начала -> текущая цена)
-        delta_abs = abs(cur_price - ref_price)
-        change_percent_from_start = (delta_abs / ref_price) * 100.0
-        atr_from_start = (delta_abs / atr) if atr else 0.0
 
-        # пик дельты в окне (от начала -> самый дальний кластерный экстремум)
+        last_alert_time[symbol] = now
+
+        # метрики
+        change_percent_from_start = abs(cur_price - ref_price) / ref_price * 100.0
         change_percent_max_delta = (max_delta / ref_price) * 100.0
-        atr_max_delta = (max_delta / atr) if atr else 0.0
+        atr_from_start = abs(cur_price - ref_price) / atr
+        atr_max_delta = max_delta / atr
 
         reason = ["atr", "threshold", "trades"]
         if ENABLE_MARK_DELTA and (mark_delta_pct is not None):
             reason.append("mark_delta")
 
-
         return {
             "symbol": symbol,
-
-            # цены
-            "trigger_price": cur_price,     # цена срабатывания (момент отправки)
-            "ref_price": ref_price,         # цена начала импульса
-            "max_delta_price": max_delta_price,  # цена (точка), дающая max_delta (экстремум окна)
-
-            # проценты
+            "trigger_price": cur_price,
+            "ref_price": ref_price,
+            "max_delta_price": max_delta_price,
             "change_percent_from_start": round(change_percent_from_start, 3),
             "change_percent_max_delta": round(change_percent_max_delta, 3),
-
-            # ATR-амплитуды
-            "atr_impulse": round(atr_impulse, 3),
+            "atr_impulse": round(atr_from_start, 3),  # текущая амплитуда
             "atr_from_start": round(atr_from_start, 3),
             "atr_max_delta": round(atr_max_delta, 3),
-
-            # оставить старое поле (если где-то используется)
             "change_percent": round(change_percent_max_delta, 3),
-
-            "ref_time": ref_time,
-            "duration": duration,
-            "direction": direction,
-            "threshold": symbol_threshold,
-            "atr_percent": (atr / cur_price) * 100.0,
-
-            "max_delta": max_delta,
-            "impulse_trades": impulse_trades,
-            "impulse_volume_usdt": impulse_volume_usdt,
-
+            "impulse_trades": tr_sum,
+            "impulse_volume_usdt": vol_sum,
             "mark_delta_pct": round(mark_delta_pct, 3) if mark_delta_pct is not None else None,
             "mark_extreme": mark_extreme,
             "reason": reason,
-            "max_delta_time": max_delta_time,
-
         }
+
+
+def cluster_mgr_interval() -> float:
+    # локально, чтобы не тащить config в hotpath
+    from config import CLUSTER_INTERVAL
+    return float(CLUSTER_INTERVAL)

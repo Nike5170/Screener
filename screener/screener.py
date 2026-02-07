@@ -7,7 +7,14 @@ from notifier import Notifier
 from logger import Logger
 from datetime import datetime
 from screener.clusters import ClusterManager
-from config import ENABLE_ATR_IMPULSE, ENABLE_DYNAMIC_THRESHOLD, ENABLE_MARK_DELTA, IMPULSE_FIXED_THRESHOLD_PCT
+from config import (
+    ENABLE_ATR_IMPULSE,
+    ENABLE_DYNAMIC_THRESHOLD,
+    ENABLE_MARK_DELTA,
+    IMPULSE_FIXED_THRESHOLD_PCT,
+    CLUSTER_INTERVAL,
+    CANDLE_TIMEFRAME_SEC,
+)
 from screener.signal_hub import SignalHub
 import math
 from users_store import UsersStore
@@ -48,21 +55,6 @@ def fmt_signed_pct(x: float, decimals: int = 3) -> str:
         return "0%"
     s = f"{x:+.{decimals}f}".replace(".", ",")
     return f"{s}%"
-
-def dyn_threshold(volume: float, v_min: float, v_max: float, p_min: float, p_max: float, exponent: float) -> float:
-    # защита от мусора
-    volume = float(volume or 0.0)
-    v_min = max(float(v_min or 1.0), 1.0)
-    v_max = max(float(v_max or v_min), v_min + 1.0)
-    p_min = float(p_min or 0.5)
-    p_max = float(p_max or 5.0)
-    exponent = float(exponent or 0.8)
-
-    x = min(max(volume, v_min), v_max)
-    norm = (math.log10(x) - math.log10(v_min)) / (math.log10(v_max) - math.log10(v_min))
-    factor = max(0.0, min(1.0, norm)) ** exponent
-    percent = p_max - (p_max - p_min) * factor
-    return float(percent)
 
 def user_match_impulse(user_cfg: dict, payload: dict, vol24h: float, trades24h: int, ob: dict) -> bool:
     # exclude
@@ -127,6 +119,9 @@ class ATRImpulseScreener:
         self.symbol_thresholds = {}
         self.cluster_mgr = ClusterManager()
         self.users = UsersStore("users.json")
+        # детект/ATR — отдельно от тиков (очередь + воркеры)
+        self.detector_queue: asyncio.Queue = asyncio.Queue(maxsize=20000)
+        self._detector_tasks: list[asyncio.Task] = []
 
         self.impulse_detector = ImpulseDetector()
         self.ws_manager = WSManager(self.handle_trade)
@@ -145,34 +140,47 @@ class ATRImpulseScreener:
 
         self.last_price[symbol] = price
 
-        # ЕДИНСТВЕННОЕ место, где обновляется "история"
-        self.cluster_mgr.add_tick(symbol, ts, price, qty)
+        # packing: единственное, что делаем на каждом тике
+        finalized = self.cluster_mgr.add_tick(symbol, ts, price, qty)
+        if not finalized:
+            return
 
-        threshold = self.symbol_thresholds.get(
-            symbol.lower(),
-            float(IMPULSE_FIXED_THRESHOLD_PCT),
-        )
         if not ENABLE_ATR_IMPULSE:
             return
 
-        result = await self.impulse_detector.check_atr_impulse(
-            symbol=symbol,
-            cluster_mgr=self.cluster_mgr,
-            last_alert_time=self.last_alert_time,
-            symbol_threshold=threshold,
-            last_price_map=self.last_price,
-            mark_price_map=self.mark_price,
-        )
-        if not result:
-            return
+        # 1) обновляем ATR по закрытым кластерам (дёшево)
+        # 2) запускаем детект НЕ на каждом закрытом cid, а один раз по последнему cid
+        #    (детектор сам смотрит окно назад). Это снижает нагрузку.
+        last_cid = int(finalized[-1])
 
-        await self._deliver_impulse(result, ts)
+        last_bucket = None
+        for cid in finalized:
+            close_ts = (int(cid) + 1) * float(CLUSTER_INTERVAL)
+            bucket = int(close_ts // float(CANDLE_TIMEFRAME_SEC))
+            # для flat-кластеров (пустые интервалы) достаточно обработать 1 кластер на bucket
+            if last_bucket is None or bucket != last_bucket:
+                self.cluster_mgr.on_cluster_close(symbol, int(cid), close_ts)
+                last_bucket = bucket
+
+        # ставим в очередь одно событие на символ (по последнему закрытому cid)
+        try:
+            self.detector_queue.put_nowait((symbol, last_cid))
+        except asyncio.QueueFull:
+            # под нагрузкой лучше пропустить часть проверок, чем копить лаг
+            pass
 
 
     async def run(self):
         await self.notifier.start()
         await self.notifier.send_message("✅ ATR-скринер запущен.")
         await self.ws_manager.start()
+        # детект-воркеры (не блокируют обработку тиков)
+        # 2 воркера обычно достаточно: детект — CPU-лёгкий, но может быть много символов.
+        if ENABLE_ATR_IMPULSE:
+            self._detector_tasks = [
+                asyncio.create_task(self._detector_worker(i), name=f"detector_worker_{i}")
+                for i in range(2)
+            ]
 
         self.signal_hub = SignalHub(
             auth_resolver=self.users.resolve_token,
@@ -218,7 +226,35 @@ class ATRImpulseScreener:
             # если run() отменили (Ctrl+C) — всё аккуратно закрываем
             await self.close()
 
+    async def _detector_worker(self, wid: int):
+        while True:
+            symbol, cid = await self.detector_queue.get()
+            try:
+                threshold = self.symbol_thresholds.get(
+                    symbol.lower(),
+                    float(IMPULSE_FIXED_THRESHOLD_PCT),
+                )
+
+                res = await self.impulse_detector.check_on_cluster(
+                    symbol=symbol,
+                    last_closed_cid=int(cid),
+                    cluster_mgr=self.cluster_mgr,
+                    last_alert_time=self.last_alert_time,
+                    symbol_threshold=float(threshold),
+                )
+                if res:
+                    await self._deliver_impulse(res, time.time())
+            except Exception as e:
+                Logger.error(f"detector_worker[{wid}] err: {e}")
+            finally:
+                self.detector_queue.task_done()
+
     async def close(self):
+        # остановить детектор-воркеры
+        if self._detector_tasks:
+            for t in self._detector_tasks:
+                t.cancel()
+            self._detector_tasks.clear()
         # стопнуть все binance ws таски
         await self.ws_manager.stop()
 
@@ -238,30 +274,6 @@ class ATRImpulseScreener:
         if mp:
             self.mark_price[symbol] = mp
             self.cluster_mgr.add_mark(symbol, time.time(), mp)
-
-
-    def _get_runtime_config(self):
-        from config import (
-            IMPULSE_MAX_LOOKBACK, IMPULSE_MIN_LOOKBACK, IMPULSE_MIN_TRADES,
-            CLUSTER_INTERVAL, MARK_DELTA_PCT, ENABLE_ATR_IMPULSE, ENABLE_MARK_DELTA
-        )
-        return {
-            "IMPULSE_MAX_LOOKBACK": IMPULSE_MAX_LOOKBACK,
-            "IMPULSE_MIN_LOOKBACK": IMPULSE_MIN_LOOKBACK,
-            "IMPULSE_MIN_TRADES": IMPULSE_MIN_TRADES,
-            "CLUSTER_INTERVAL": CLUSTER_INTERVAL,
-            "MARK_DELTA_PCT": MARK_DELTA_PCT,
-            "ENABLE_ATR_IMPULSE": ENABLE_ATR_IMPULSE,
-            "ENABLE_MARK_DELTA": ENABLE_MARK_DELTA,
-        }
-
-    def _patch_runtime_config(self, patch: dict):
-        import config as C
-        allow = set(self._get_runtime_config().keys())
-        for k, v in (patch or {}).items():
-            if k in allow:
-                setattr(C, k, v)
-        return self._get_runtime_config()
 
     async def _get_top(self, mode: str, n: int):
         if not hasattr(self, "symbol_24h_volume") or not self.symbol_24h_volume:
@@ -303,7 +315,6 @@ class ATRImpulseScreener:
         cur_price = trigger_price
         pct_from_start = float(result.get("change_percent_from_start") or 0.0)
         pct_max_delta  = float(result.get("change_percent_max_delta") or 0.0)
-        max_delta_time = result.get("max_delta_time")
 
         atr_from_start = float(result.get("atr_from_start") or 0.0)
         atr_max_delta  = float(result.get("atr_max_delta") or 0.0)
@@ -337,7 +348,6 @@ class ATRImpulseScreener:
             f"Скорость: {speed_percent:.3f}%/сек\n"
             f"📐 Амплитуда: {float(payload['atr_impulse']):.2f} ATR\n"
             
-            f"⏱️ Время max дельты: {f'{max_delta_time:.2f} сек' if max_delta_time is not None else 'N/A'}\n"
             f"🎯 Цена срабатывания: {trigger_price}\n"
             f"📍 Цена начала импульса: {ref_price}\n"
             f"🏁 Цена max дельты: {max_delta_price}\n\n"
