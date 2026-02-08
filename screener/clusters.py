@@ -56,11 +56,6 @@ class ClusterManager:
         self._candles: Dict[str, deque] = defaultdict(lambda: deque(maxlen=ATR_PERIOD))
         self._atr: Dict[str, float] = {}
 
-        # mark state (оставляем как есть по смыслу, можно доработать позже)
-        self._mark_cur: Dict[str, float] = {}
-        self._mark_seg: Dict[str, dict] = {}
-        self._mark_segs: Dict[str, deque] = defaultdict(deque)
-
     def _get_state(self, symbol: str) -> _SymState:
         st = self._sym.get(symbol)
         if st is None:
@@ -107,14 +102,6 @@ class ClusterManager:
             # на всякий случай (редко)
             c.reset(cid, st.last_price)
         c.update(price, qty)
-
-        # mark-segment last_min/last_max по last-price
-        seg = self._mark_seg.get(symbol)
-        if seg is not None:
-            if price < seg["last_min"]:
-                seg["last_min"] = price
-            if price > seg["last_max"]:
-                seg["last_max"] = price
 
         return finalized
 
@@ -191,75 +178,6 @@ class ClusterManager:
 
     def get_atr(self, symbol: str) -> Optional[float]:
         return self._atr.get(symbol)
-
-    # ---------------- mark (оставляем, как у тебя) ----------------
-
-    def add_mark(self, symbol: str, t: float, mark: float):
-        prev = self._mark_cur.get(symbol)
-        if prev is not None and prev == mark:
-            return
-
-        old = self._mark_seg.get(symbol)
-        if old is not None:
-            old["end"] = t
-            self._mark_segs[symbol].append(old)
-
-        # last_price seed
-        st = self._sym.get(symbol)
-        last_price = st.last_price if st and st.last_price else mark
-
-        self._mark_cur[symbol] = mark
-        self._mark_seg[symbol] = {
-            "start": t,
-            "end": None,
-            "mark": mark,
-            "last_min": last_price,
-            "last_max": last_price,
-        }
-
-    def get_mark_last_delta_extreme(self, symbol: str, ref_time: float, cur_time: float):
-        segs = self._mark_segs.get(symbol)
-        cur = self._mark_seg.get(symbol)
-        if (not segs or len(segs) == 0) and cur is None:
-            return None
-
-        def overlap(a_start, a_end, b_start, b_end):
-            if a_end is None:
-                a_end = b_end
-            return not (a_end < b_start or a_start > b_end)
-
-        best = None
-        mark_updates = 0
-
-        def consider(seg):
-            nonlocal best, mark_updates
-            if not overlap(seg["start"], seg.get("end"), ref_time, cur_time):
-                return
-            mark_updates += 1
-            m = seg["mark"]
-            last_min = seg["last_min"]
-            last_max = seg["last_max"]
-            cand = []
-            if last_min:
-                cand.append((m - last_min) / last_min * 100.0)
-            if last_max:
-                cand.append((m - last_max) / last_max * 100.0)
-            if not cand:
-                return
-            d = max(cand, key=lambda x: abs(x))
-            if best is None or abs(d) > best["abs"]:
-                best = {"delta": d, "abs": abs(d)}
-
-        if segs:
-            for s in segs:
-                consider(s)
-        if cur is not None:
-            consider(cur)
-
-        if best is None:
-            return None
-        best["mark_updates"] = mark_updates
-        return best
     
     def get_last_price(self, symbol: str) -> float | None:
         st = self._sym.get(symbol)

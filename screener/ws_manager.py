@@ -152,40 +152,32 @@ class _BinanceSubWS:
 
 class WSManager:
     """
-    Два коннекта:
       - trades:   <symbol>@aggTrade
-      - mark:     <symbol>@markPrice@1s
+
     Подписки обновляются диффом (каждый час можешь менять список символов).
     """
     def __init__(self, handle_trade_callback):
         self.handle_trade_callback = handle_trade_callback
-        self.handle_mark_callback = None
 
         self._symbols = set()
 
         self._trade_ws = _BinanceSubWS("aggTrade", self._on_trade_event)
-        self._mark_ws = _BinanceSubWS("markPrice", self._on_mark_event)
-
-    def set_mark_handler(self, cb):
-        self.handle_mark_callback = cb
 
     async def start(self):
         await self._trade_ws.start()
-        await self._mark_ws.start()
+
 
     async def stop(self):
         await self._trade_ws.stop()
-        await self._mark_ws.stop()
+
 
     async def set_symbols(self, symbols: list[str] | set[str]):
         # symbols в твоём коде сейчас lower — оставляем lower
         self._symbols = set(s.lower() for s in symbols)
 
         trade_streams = {f"{s}@aggTrade" for s in self._symbols}
-        mark_streams = {f"{s}@markPrice@1s" for s in self._symbols}
 
         await self._trade_ws.set_streams(trade_streams)
-        await self._mark_ws.set_streams(mark_streams)
 
     async def _on_trade_event(self, data: dict):
         # Binance присылает raw event: {"e":"aggTrade", ...}
@@ -199,16 +191,3 @@ class WSManager:
         res = self.handle_trade_callback(symbol, data)
         if asyncio.iscoroutine(res):
             await res
-
-    async def _on_mark_event(self, data: dict):
-        if not isinstance(data, dict):
-            return
-        if data.get("e") != "markPriceUpdate":
-            return
-        symbol = str(data.get("s") or "").lower()
-        if not symbol:
-            return
-        if self.handle_mark_callback:
-            res = self.handle_mark_callback(symbol, data)
-            if asyncio.iscoroutine(res):
-                await res

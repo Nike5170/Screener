@@ -6,8 +6,7 @@ from config import (
     IMPULSE_MAX_CLUSTERS,
     IMPULSE_MIN_CLUSTERS,
     ATR_MULTIPLIER,
-    IMPULSE_MIN_TRADES,
-    ENABLE_MARK_DELTA,
+    IMPULSE_TRADES,
     ANTI_SPAM_PER_SYMBOL,
     ANTI_SPAM_BURST_COUNT,
     ANTI_SPAM_BURST_WINDOW,
@@ -87,18 +86,9 @@ class ImpulseDetector:
             tr_sum += int(c.trades)
             vol_sum += float(c.volume)
 
-        if tr_sum < IMPULSE_MIN_TRADES:
+        if tr_sum < IMPULSE_TRADES:
             return
 
-        mark_delta_pct = None
-        mark_extreme = None
-        if ENABLE_MARK_DELTA:
-            # ref_time/cur_time грубо восстанавливаем по cid
-            ref_time = ref_cid * interval
-            cur_time = (last_closed_cid + 1) * interval
-            mark_extreme = cluster_mgr.get_mark_last_delta_extreme(symbol, ref_time, cur_time)
-            if mark_extreme:
-                mark_delta_pct = mark_extreme["delta"]
 
         # антиспам
         last_alert = last_alert_time.get(symbol, 0)
@@ -124,10 +114,6 @@ class ImpulseDetector:
         atr_from_start = abs(cur_price - ref_price) / atr
         atr_max_delta = max_delta / atr
 
-        reason = ["atr", "threshold", "trades"]
-        if ENABLE_MARK_DELTA and (mark_delta_pct is not None):
-            reason.append("mark_delta")
-
         return {
             "symbol": symbol,
             "trigger_price": cur_price,
@@ -139,15 +125,10 @@ class ImpulseDetector:
             "duration": float(duration),
             "change_percent_from_start": round(change_percent_from_start, 3),
             "change_percent_max_delta": round(change_percent_max_delta, 3),
-            "atr_impulse": round(atr_from_start, 3),  # текущая амплитуда
             "atr_from_start": round(atr_from_start, 3),
             "atr_max_delta": round(atr_max_delta, 3),
-            "change_percent": round(change_percent_max_delta, 3),
             "impulse_trades": tr_sum,
-            "impulse_volume_usdt": vol_sum,
-            "mark_delta_pct": round(mark_delta_pct, 3) if mark_delta_pct is not None else None,
-            "mark_extreme": mark_extreme,
-            "reason": reason,
+            "impulse_volume_usdt": vol_sum
         }
 
 

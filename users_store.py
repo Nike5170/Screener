@@ -5,18 +5,9 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from config import ALLOWED_FILTERS
 
 DEFAULT_USERS_PATH = "users.json"
-
-# Плоские ключи как в users.json -> filters
-ALLOWED_FILTERS: Dict[str, list] = {
-    "volume_threshold": [10_000_000, 50_000_000, 100_000_000, 200_000_000, 500_000_000],
-    "min_trades_24h": [10_000, 50_000, 100_000, 200_000],
-    "orderbook_min_bid": [20_000, 50_000, 100_000, 200_000],
-    "orderbook_min_ask": [20_000, 50_000, 100_000, 200_000],
-    "impulse_min_trades": [100, 500, 1000],
-    "mark_delta_pct": [0.5, 1.0, 2.0],
-}
 
 
 def _now() -> float:
@@ -195,9 +186,7 @@ class UsersStore:
         users[user_id] = {
             "token": token,
             "tg_chat_id": str(tg_chat_id) if tg_chat_id else None,
-            "filters": final_filters,
-            "created_at": _now(),
-            "updated_at": _now(),
+            "filters": final_filters
         }
         self.save()
         return users[user_id]

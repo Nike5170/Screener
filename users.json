@@ -8,8 +8,7 @@
         "min_trades_24h": 10000,
         "orderbook_min_bid": 20000,
         "orderbook_min_ask": 20000,
-        "impulse_min_trades": 100,
-        "mark_delta_pct": 0.5
+        "impulse_trades": 100
       }
     }
   }

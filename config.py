@@ -1,20 +1,28 @@
-# config.py
 
-TELEGRAM_TOKEN = "8549716017:AAEQTa-QugWoakJGJRH-l0Cbcfn8NtcZx1U"
+from __future__ import annotations
+from typing import Dict
 
-TELEGRAM_CHAT_ID = "6360001973"
+ADMIN_TELEGRAM_TOKEN = "8549716017:AAEQTa-QugWoakJGJRH-l0Cbcfn8NtcZx1U"
+ADMIN_TELEGRAM_CHAT_ID = "6360001973"
+
+# ---------------- Allowed filters (для UI/patch) ----------------
+ALLOWED_FILTERS: Dict[str, list] = {
+    "volume_threshold": [10_000_000, 50_000_000, 100_000_000, 200_000_000, 500_000_000],
+    "min_trades_24h": [10_000, 50_000, 100_000, 200_000],
+    "orderbook_min_bid": [20_000, 50_000, 100_000, 200_000],
+    "orderbook_min_ask": [20_000, 50_000, 100_000, 200_000],
+    "impulse_trades": [100, 500, 1000],
+}
 
 # --- Фильтры ---
 EXCLUDE_SYMBOLS = set()
-#"ETHUSDT", "BTCUSDT", "SOLUSDT"
-VOLUME_THRESHOLD = 10_000_000
-MIN_TRADES = 10_000
-
+# дефолты = первые значения из ALLOWED_FILTERS
+VOLUME_THRESHOLD = int(ALLOWED_FILTERS["volume_threshold"][0])
+MIN_TRADES = int(ALLOWED_FILTERS["min_trades_24h"][0])
+ORDERBOOK_MIN_BID_VOLUME = float(ALLOWED_FILTERS["orderbook_min_bid"][0])
+ORDERBOOK_MIN_ASK_VOLUME = float(ALLOWED_FILTERS["orderbook_min_ask"][0])
+IMPULSE_TRADES = int(ALLOWED_FILTERS["impulse_trades"][0])
 # --- Импульсы ---
-
-IMPULSE_MAX_LOOKBACK = 15
-IMPULSE_MIN_LOOKBACK = 0.05
-
 ANTI_SPAM_PER_SYMBOL = 180        # сек
 ANTI_SPAM_BURST_COUNT = 5         # сигналов
 ANTI_SPAM_BURST_WINDOW = 30       # окно сек
@@ -32,13 +40,11 @@ HTTP_CONCURRENCY = 5
 HTTP_TIMEOUT_SEC = 10
 
 # --- ORDERBOOK ---
-ORDERBOOK_MIN_BID_VOLUME = 20_000
-ORDERBOOK_MIN_ASK_VOLUME = 20_000
 ORDERBOOK_DEPTH_PERCENT = 0.02
 ORDERBOOK_REQUEST_DELAY = 0.1
 
 # --- DYNAMIC IMPULSE THRESHOLD ---
-IMPULSE_VOL_MIN = 10_000_000
+IMPULSE_VOL_MIN = VOLUME_THRESHOLD
 IMPULSE_VOL_MAX = 5_000_000_000
 IMPULSE_P_MIN = 0.7
 IMPULSE_P_MAX = 2.5
@@ -62,17 +68,11 @@ CLIPBOARD_RETRY_BACKOFF = 2
 STAT_RISE_THRESHOLD = 1.0   # % роста после импульса
 STAT_FALL_THRESHOLD = 0.5   # % отката после импульса
 
-IMPULSE_MIN_TRADES = 100
-
-MARK_DELTA_PCT = 0.5
 ENABLE_ATR_IMPULSE = True
-ENABLE_MARK_DELTA = True
 
 SIGNAL_HUB_HOST = "0.0.0.0"
 SIGNAL_HUB_PORT = 9001
 SIGNAL_HUB_TOKEN = "Qn8vX5sJp2Kz0mWcR4tY7uAa9eLd1HfG3iP6oBnV"
-
-
 
 #NEW
 CLUSTER_INTERVAL = 0.05

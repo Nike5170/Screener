@@ -3,12 +3,12 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Set, Optional, Callable
-from users_store import ALLOWED_FILTERS
+
 import websockets
 from websockets.server import WebSocketServerProtocol
 
 from logger import Logger
-from config import SIGNAL_HUB_HOST, SIGNAL_HUB_PORT
+from config import SIGNAL_HUB_HOST, SIGNAL_HUB_PORT, ALLOWED_FILTERS
 
 
 @dataclass(eq=False)

@@ -1,23 +1,24 @@
 import asyncio
 import time
+from unittest import result
 from screener.impulses import ImpulseDetector
 from screener.ws_manager import WSManager
 from screener.symbol_fetcher import SymbolFetcher
 from notifier import Notifier
 from logger import Logger
-from datetime import datetime
 from screener.clusters import ClusterManager
 from config import (
+    ALLOWED_FILTERS,
     ENABLE_ATR_IMPULSE,
     ENABLE_DYNAMIC_THRESHOLD,
-    ENABLE_MARK_DELTA,
     IMPULSE_FIXED_THRESHOLD_PCT,
     CLUSTER_INTERVAL,
     CANDLE_TIMEFRAME_SEC,
 )
 from screener.signal_hub import SignalHub
-import math
 from users_store import UsersStore
+
+NUMERIC_KEYS = tuple(ALLOWED_FILTERS.keys())
 
 def fmt_compact_usdt(x: float) -> str:
     try:
@@ -48,43 +49,10 @@ def fmt_compact_usdt(x: float) -> str:
         return _fmt(val, "K", 0)
     return f"{int(x)}"
 
-def fmt_signed_pct(x: float, decimals: int = 3) -> str:
-    try:
-        x = float(x)
-    except Exception:
-        return "0%"
-    s = f"{x:+.{decimals}f}".replace(".", ",")
-    return f"{s}%"
-
-def user_match_impulse(user_cfg: dict, payload: dict, vol24h: float, trades24h: int, ob: dict) -> bool:
-    # 1) volume / trades24h / orderbook
-    v_thr = float(user_cfg["volume_threshold"])
-    if vol24h < v_thr:
-        return False
-
-    t_thr = int(user_cfg["min_trades_24h"])
-    if trades24h < t_thr:
-        return False
-
-    ob_bid_thr = float(user_cfg["orderbook_min_bid"])
-    ob_ask_thr = float(user_cfg["orderbook_min_ask"])
-
-    if float((ob or {}).get("bid", 0.0)) < ob_bid_thr:
-        return False
-    if float((ob or {}).get("ask", 0.0)) < ob_ask_thr:
-        return False
-
-    # 2) impulse_min_trades
-    impulse_min_trades = int(user_cfg["impulse_min_trades"])
-    if int(payload.get("impulse_trades") or 0) < impulse_min_trades:
-        return False
-
-    # 3) mark_delta_pct (если в payload нет mark_delta — не проходит)
-    md_thr = float(user_cfg["mark_delta_pct"])
-    md_val = payload.get("mark_delta_pct")
-    if md_val is None or abs(float(md_val)) < md_thr:
-        return False
-
+def user_match_impulse(user_cfg: dict, payload: dict) -> bool:
+    for k in NUMERIC_KEYS:
+        if float(payload.get(k) or 0) < float(user_cfg.get(k) or 0):
+            return False
     return True
 
 
@@ -101,10 +69,8 @@ class ATRImpulseScreener:
 
         self.impulse_detector = ImpulseDetector()
         self.ws_manager = WSManager(self.handle_trade)
-        self.ws_manager.set_mark_handler(self.handle_mark)
         self.symbol_fetcher = SymbolFetcher()
         self.last_price = {}
-        self.mark_price = {}
         self.signal_hub = None
         self._signalhub_server = None
 
@@ -242,14 +208,6 @@ class ATRImpulseScreener:
 
         # закрыть aiohttp сессию телеги
         await self.notifier.close()
-        
-    async def handle_mark(self, symbol, data):
-        if not ENABLE_MARK_DELTA:
-            return
-        mp = float(data.get("p", 0))
-        if mp:
-            self.mark_price[symbol] = mp
-            self.cluster_mgr.add_mark(symbol, time.time(), mp)
 
     async def _get_top(self, mode: str, n: int):
         if not hasattr(self, "symbol_24h_volume") or not self.symbol_24h_volume:
@@ -273,14 +231,13 @@ class ATRImpulseScreener:
             "exchange": "BINANCE-FUT",
             "market": "FUTURES",
             "symbol": symbol_up,
-            "change_percent": float(result.get("change_percent") or 0.0),
-            "impulse_trades": int(result.get("impulse_trades") or 0),
-            "impulse_volume_usdt": float(result.get("impulse_volume_usdt") or 0.0),
-            "atr_impulse": float(result.get("atr_impulse") or 0.0),
-            "mark_delta_pct": result.get("mark_delta_pct"),
-            "mark_extreme": result.get("mark_extreme"),
-            "ts": float(ts),
-            "reason": result.get("reason") or ["atr"],
+
+            # ключи строго как в ALLOWED_FILTERS
+            "volume_threshold": float(vol24h),                 # реальный 24h volume
+            "min_trades_24h": int(trades24h),                  # реальные 24h trades
+            "orderbook_min_bid": float((ob or {}).get("bid", 0.0)),    # реальный bid-volume в стакане
+            "orderbook_min_ask": float((ob or {}).get("ask", 0.0)),    # реальный ask-volume в стакане
+            "impulse_trades": int(result.get("impulse_trades") or 0),  # trades внутри импульса
         }
 
         # данные для сообщения
@@ -298,23 +255,11 @@ class ATRImpulseScreener:
         duration = float(result.get("duration") or 0.0)
         change_percent = float(pct_from_start)  # для строки "Изменение" логичнее % от начала
         speed_percent = abs(change_percent) / max(duration, float(CLUSTER_INTERVAL))
- 
+        impulse_vol = float(result.get("impulse_volume_usdt") or 0.0)
+
         direction = cur_price - ref_price
         color = "🟢" if direction > 0 else "🔴"
         direction_text = "Памп" if direction > 0 else "Дамп"
-
-        # mark block
-        mark_block = ""
-        if ENABLE_MARK_DELTA:
-            mark_trigger = payload.get("mark_delta_pct")
-            mark_extreme = payload.get("mark_extreme")
-            if mark_trigger is not None:
-                mark_block += f"🧷 Δ Mark-Last (текущий экстремум): {fmt_signed_pct(mark_trigger)}\n"
-            if mark_extreme:
-                mark_block += (
-                    f"📈 Δ Mark-Last max (окно): {fmt_signed_pct(mark_extreme['delta'])} "
-                    f"(mark updates: {mark_extreme['mark_updates']})\n"
-                )
 
         message = (
             f"{color} <code>{symbol_up}</code> {direction_text}\n"
@@ -322,7 +267,6 @@ class ATRImpulseScreener:
             f"🚀 Цена: {cur_price}\n\n"
 
             f"Скорость: {speed_percent:.3f}%/сек\n"
-            f"📐 Амплитуда: {float(payload['atr_impulse']):.2f} ATR\n"
             
             f"🎯 Цена срабатывания: {trigger_price}\n"
             f"📍 Цена начала импульса: {ref_price}\n"
@@ -334,9 +278,8 @@ class ATRImpulseScreener:
             f"📐 ATR от начала: {atr_from_start:.2f} ATR\n"
             f"📐 ATR max дельты: {atr_max_delta:.2f} ATR\n\n"
 
-            f"{mark_block}\n"
             f"📊 Объём 24ч: {fmt_compact_usdt(vol24h)} USDT\n"
-            f"🔥 Объём импульса: {fmt_compact_usdt(payload['impulse_volume_usdt'])} USDT "
+            f"🔥 Объём импульса: {fmt_compact_usdt(impulse_vol)} USDT "
             f"({payload['impulse_trades']} сделок)"
         )
 
@@ -346,7 +289,7 @@ class ATRImpulseScreener:
 
         # пользователи (без sent_to_users — антиспам уже в impulses.py)
         for uid, user in self.users.all_users().items():
-            if not user_match_impulse(user.cfg, payload, vol24h, trades24h, ob):
+            if not user_match_impulse(user.cfg, payload):
                 continue
 
             if self.signal_hub:
@@ -358,7 +301,7 @@ class ATRImpulseScreener:
             Logger.info(
                 f"DELIVER impulse: {symbol_up} -> user={uid} "
                 f"(tg={'yes' if user.tg_chat_id else 'no'}, ws={'yes' if self.signal_hub else 'no'}) "
-                f"chg={payload['change_percent']:.2f}% trades={payload['impulse_trades']}"
+                f"chg={change_percent:.2f}% trades={payload['impulse_trades']}"
             )
 
 

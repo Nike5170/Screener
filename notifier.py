@@ -5,13 +5,13 @@ import time
 from typing import Optional, Tuple
 
 from logger import Logger
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import ADMIN_TELEGRAM_TOKEN, ADMIN_TELEGRAM_CHAT_ID
 
 
 class Notifier:
     def __init__(self):
-        self.TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        self.default_chat_id = TELEGRAM_CHAT_ID  # можно оставить для админа/тестов
+        self.TG_URL = f"https://api.telegram.org/bot{ADMIN_TELEGRAM_TOKEN}/sendMessage"
+        self.default_chat_id = ADMIN_TELEGRAM_CHAT_ID  # можно оставить для админа/тестов
 
         self.telegram_queue: asyncio.Queue[Tuple[str, str]] = asyncio.Queue(maxsize=2000)
 
