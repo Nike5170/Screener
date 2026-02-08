@@ -57,60 +57,36 @@ def fmt_signed_pct(x: float, decimals: int = 3) -> str:
     return f"{s}%"
 
 def user_match_impulse(user_cfg: dict, payload: dict, vol24h: float, trades24h: int, ob: dict) -> bool:
-    # exclude
-    excl = set((user_cfg.get("exclude_symbols") or []))
-    if payload.get("symbol", "").upper() in excl:
-        return False
-
-    # enable blocks
-    atr_enabled = bool((user_cfg.get("atr_impulse") or {}).get("enabled", True))
-    mark_enabled = bool((user_cfg.get("mark_delta") or {}).get("enabled", True))
-
-    reason = set(payload.get("reason") or [])
-    has_mark = ("mark_delta" in reason) and (payload.get("mark_delta_pct") is not None)
-
-    # Если ATR выключен, а mark включен — пропускаем только события, где реально есть mark_delta
-    if (not atr_enabled) and mark_enabled:
-        if not has_mark:
-            return False
-
-    # Если mark выключен — не требуем mark_delta
-    # Если оба выключены — смысла нет
-    if (not atr_enabled) and (not mark_enabled):
-        return False
-
-    # volume / trades24h / orderbook — только ужесточение (вариант A)
-    v_thr = float(user_cfg.get("volume_threshold") or 20_000_000)
+    # 1) volume / trades24h / orderbook
+    v_thr = float(user_cfg["volume_threshold"])
     if vol24h < v_thr:
         return False
 
-    t_thr = int(user_cfg.get("min_trades_24h") or 10_000)
+    t_thr = int(user_cfg["min_trades_24h"])
     if trades24h < t_thr:
         return False
 
-    ob_bid_thr = float(user_cfg.get("orderbook_min_bid") or 20_000)
-    ob_ask_thr = float(user_cfg.get("orderbook_min_ask") or 20_000)
-    if float((ob or {}).get("bid", 0)) < ob_bid_thr:
+    ob_bid_thr = float(user_cfg["orderbook_min_bid"])
+    ob_ask_thr = float(user_cfg["orderbook_min_ask"])
+
+    if float((ob or {}).get("bid", 0.0)) < ob_bid_thr:
         return False
-    if float((ob or {}).get("ask", 0)) < ob_ask_thr:
+    if float((ob or {}).get("ask", 0.0)) < ob_ask_thr:
         return False
 
-    # impulse filters (тоже ужесточение)
-    imp = user_cfg.get("impulse") or {}
-
-    impulse_min_trades = int(imp.get("impulse_min_trades") or 1000)
+    # 2) impulse_min_trades
+    impulse_min_trades = int(user_cfg["impulse_min_trades"])
     if int(payload.get("impulse_trades") or 0) < impulse_min_trades:
         return False
 
-    # mark_delta pct фильтруем, если включено
-    if mark_enabled:
-        md = user_cfg.get("mark_delta") or {}
-        md_thr = float(md.get("pct") or 1.0)
-        md_val = payload.get("mark_delta_pct")
-        if md_val is None or abs(float(md_val)) < md_thr:
-            return False
+    # 3) mark_delta_pct (если в payload нет mark_delta — не проходит)
+    md_thr = float(user_cfg["mark_delta_pct"])
+    md_val = payload.get("mark_delta_pct")
+    if md_val is None or abs(float(md_val)) < md_thr:
+        return False
 
     return True
+
 
 class ATRImpulseScreener:
     def __init__(self):

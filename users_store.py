@@ -1,24 +1,90 @@
 # users_store.py
+import copy
 import json
 import os
-from shutil import copy
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-import copy
 
 DEFAULT_USERS_PATH = "users.json"
 
-ALLOWED_FILTERS = {
-    "volume_threshold": [10e6, 50e6, 100e6, 200e6, 500e6],
+# Плоские ключи как в users.json -> filters
+ALLOWED_FILTERS: Dict[str, list] = {
+    "volume_threshold": [10_000_000, 50_000_000, 100_000_000, 200_000_000, 500_000_000],
     "min_trades_24h": [10_000, 50_000, 100_000, 200_000],
     "orderbook_min_bid": [20_000, 50_000, 100_000, 200_000],
     "orderbook_min_ask": [20_000, 50_000, 100_000, 200_000],
-    "impulse.impulse_min_trades": [100, 500, 1000],
-    "mark_delta.pct": [0.5, 1.0, 2.0],
+    "impulse_min_trades": [100, 500, 1000],
+    "mark_delta_pct": [0.5, 1.0, 2.0],
 }
+
+
 def _now() -> float:
     return time.time()
+
+
+def _normalize_num(x):
+    if isinstance(x, bool):
+        return x
+    try:
+        if isinstance(x, int):
+            return x
+        if isinstance(x, float):
+            return x
+        if isinstance(x, str):
+            s = x.strip()
+            if "." in s or "e" in s.lower():
+                return float(s)
+            return int(s)
+    except Exception:
+        pass
+    return x
+
+
+def _default_filters_from_allowed() -> Dict[str, Any]:
+    """
+    Дефолты = первые значения из ALLOWED_FILTERS,
+    чтобы не дублировать дефолты вручную.
+    """
+    out: Dict[str, Any] = {}
+    for k, arr in ALLOWED_FILTERS.items():
+        if arr:
+            out[k] = _normalize_num(arr[0])
+    return out
+
+
+def _validate_patch(patch: dict) -> dict:
+    """
+    Разрешаем менять только ключи из ALLOWED_FILTERS и только на значения из списка.
+    Остальное игнорируем.
+    """
+    out: Dict[str, Any] = {}
+    for k, v in (patch or {}).items():
+        k = str(k)
+        if k not in ALLOWED_FILTERS:
+            continue
+
+        v_norm = _normalize_num(v)
+        allowed = ALLOWED_FILTERS[k]
+
+        ok = False
+        for a in allowed:
+            a_norm = _normalize_num(a)
+            if isinstance(a_norm, (int, float)) and isinstance(v_norm, (int, float)):
+                if float(a_norm) == float(v_norm):
+                    ok = True
+                    v_norm = a_norm
+                    break
+            else:
+                if a_norm == v_norm:
+                    ok = True
+                    v_norm = a_norm
+                    break
+
+        if ok:
+            out[k] = v_norm
+
+    return out
 
 
 @dataclass
@@ -31,14 +97,14 @@ class UserProfile:
 
 class UsersStore:
     """
-    Вариант A:
-      - сервер работает по минимальным параметрам
-      - user cfg может только ужесточать фильтры
+    Всегда возвращаем cfg уже смерженный с дефолтами.
+    Тогда в коде проверок не нужны `or 20000` и т.п.
     """
 
     def __init__(self, path: str = DEFAULT_USERS_PATH):
         self.path = path
         self._data: Dict[str, Any] = {"users": {}}
+        self._default_filters = _default_filters_from_allowed()
         self.load()
 
     def load(self):
@@ -57,6 +123,13 @@ class UsersStore:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.path)
 
+    def _merge_defaults(self, filters: dict | None) -> Dict[str, Any]:
+        cfg = copy.deepcopy(self._default_filters)
+        if isinstance(filters, dict):
+            for k, v in filters.items():
+                cfg[str(k)] = v
+        return cfg
+
     def all_users(self) -> Dict[str, UserProfile]:
         out: Dict[str, UserProfile] = {}
         for uid, u in (self._data.get("users") or {}).items():
@@ -64,7 +137,7 @@ class UsersStore:
                 user_id=uid,
                 token=str(u.get("token") or ""),
                 tg_chat_id=str(u.get("tg_chat_id")) if u.get("tg_chat_id") else None,
-                cfg=(u.get("filters") or {}),
+                cfg=self._merge_defaults(u.get("filters") or {}),
             )
         return out
 
@@ -77,20 +150,9 @@ class UsersStore:
                 return uid
         return None
 
-    def get_user(self, user_id: str) -> Optional[UserProfile]:
-        u = (self._data.get("users") or {}).get(user_id)
-        if not u:
-            return None
-        return UserProfile(
-            user_id=user_id,
-            token=str(u.get("token") or ""),
-            tg_chat_id=str(u.get("tg_chat_id")) if u.get("tg_chat_id") else None,
-            cfg=(u.get("filters") or {}),
-        )
-
     def get_user_cfg(self, user_id: str) -> Dict[str, Any]:
         u = (self._data.get("users") or {}).get(user_id) or {}
-        return u.get("filters") or {}
+        return self._merge_defaults(u.get("filters") or {})
 
     def patch_user_cfg(self, user_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
         users = self._data.setdefault("users", {})
@@ -98,20 +160,14 @@ class UsersStore:
         cur = u.setdefault("filters", {})
 
         safe_patch = _validate_patch(patch or {})
+        cur.update(safe_patch)
 
-        def deep_merge(dst: Dict[str, Any], src: Dict[str, Any]):
-            for k, v in src.items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        deep_merge(cur, safe_patch)
         u["updated_at"] = _now()
         self.save()
-        return cur
 
-    
+        # UI пусть получает полный конфиг (с дефолтами тоже)
+        return self._merge_defaults(cur)
+
     def create_user(
         self,
         user_id: str,
@@ -120,10 +176,6 @@ class UsersStore:
         filters: dict | None = None,
         overwrite: bool = False,
     ) -> dict:
-        """
-        Создаёт/обновляет пользователя в users.json.
-        Возвращает созданную запись (dict).
-        """
         import secrets
 
         user_id = str(user_id).strip()
@@ -136,38 +188,9 @@ class UsersStore:
             raise ValueError(f"user_id already exists: {user_id}")
 
         if token is None:
-            # короткий, но криптостойкий токен
             token = secrets.token_urlsafe(24)
 
-        # дефолтные фильтры (вариант A: минимальные)
-        default_filters = {
-            "exclude_symbols": [],
-
-            "volume_threshold": 10_000_000,
-            "min_trades_24h": 10_000,
-            "orderbook_min_bid": 20_000,
-            "orderbook_min_ask": 20_000,
-
-            "impulse": {
-            "impulse_min_trades": 100
-            },
-
-            "mark_delta": {"enabled": True, "pct": 0.5},
-            "atr_impulse": {"enabled": True}
-        }
-
-        # если передали filters — смерджим поверх дефолтов
-        final_filters = copy.deepcopy(default_filters)
-
-        def deep_merge(dst: dict, src: dict):
-            for k, v in src.items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        if isinstance(filters, dict):
-            deep_merge(final_filters, filters)
+        final_filters = self._merge_defaults(filters or {})
 
         users[user_id] = {
             "token": token,
@@ -178,77 +201,3 @@ class UsersStore:
         }
         self.save()
         return users[user_id]
-
-
-
-def _flatten(d: dict, prefix: str = "") -> dict:
-    out = {}
-    for k, v in (d or {}).items():
-        key = f"{prefix}.{k}" if prefix else str(k)
-        if isinstance(v, dict):
-            out.update(_flatten(v, key))
-        else:
-            out[key] = v
-    return out
-
-def _unflatten(flat: dict) -> dict:
-    root = {}
-    for k, v in (flat or {}).items():
-        parts = str(k).split(".")
-        cur = root
-        for p in parts[:-1]:
-            cur = cur.setdefault(p, {})
-        cur[parts[-1]] = v
-    return root
-
-def _normalize_num(x):
-    # приводим 20e6/строки/инты к float/инт корректно
-    if isinstance(x, bool):
-        return x
-    try:
-        if isinstance(x, int):
-            return x
-        if isinstance(x, float):
-            return x
-        if isinstance(x, str):
-            if "." in x or "e" in x.lower():
-                return float(x)
-            return int(x)
-    except Exception:
-        pass
-    return x
-
-def _validate_patch(patch: dict) -> dict:
-    """
-    Разрешаем менять только ключи из ALLOWED_FILTERS и только на значения из списка.
-    Остальное игнорируем.
-    """
-    flat = _flatten(patch)
-    out = {}
-
-    for k, v in flat.items():
-        if k not in ALLOWED_FILTERS:
-            continue
-
-        v_norm = _normalize_num(v)
-
-        allowed = ALLOWED_FILTERS[k]
-        # сравнение чисел: лучше по float
-        ok = False
-        for a in allowed:
-            a_norm = _normalize_num(a)
-            if isinstance(a_norm, (int, float)) and isinstance(v_norm, (int, float)):
-                if float(a_norm) == float(v_norm):
-                    ok = True
-                    v_norm = a_norm
-                    break
-            else:
-                if a_norm == v_norm:
-                    ok = True
-                    v_norm = a_norm
-                    break
-
-        if ok:
-            out[k] = v_norm
-
-    return _unflatten(out)

@@ -3,7 +3,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Set, Optional, Callable
-
+from users_store import ALLOWED_FILTERS
 import websockets
 from websockets.server import WebSocketServerProtocol
 
@@ -173,7 +173,14 @@ class SignalHub:
                     )
                     applied = self._config_patcher_for_user(ci.user_id, patch)
                     await ws.send(json.dumps({"type": "config", "data": applied}, ensure_ascii=False))
-
+                
+                elif t == "get_allowed_filters":
+                    Logger.info(f"WS get_allowed_filters: user_id={ci.user_id} client_id={ci.client_id}")
+                    await ws.send(json.dumps(
+                        {"type": "allowed_filters", "data": ALLOWED_FILTERS},
+                        ensure_ascii=False
+                    ))
+               
                 elif t == "get_top":
                     mode = msg.get("mode", "volume24h")
                     n = int(msg.get("n", 5))
