@@ -8,7 +8,7 @@ ADMIN_TELEGRAM_CHAT_ID = "6360001973"
 # ---------------- Allowed filters (для UI/patch) ----------------
 ALLOWED_FILTERS: Dict[str, list] = {
     "volume_threshold": [10_000_000, 50_000_000, 100_000_000, 200_000_000, 500_000_000],
-    "min_trades_24h": [10_000, 50_000, 100_000, 200_000],
+    "min_trades_24h": [20_000, 50_000, 100_000, 200_000],
     "orderbook_min_bid": [20_000, 50_000, 100_000, 200_000],
     "orderbook_min_ask": [20_000, 50_000, 100_000, 200_000],
     "impulse_trades": [100, 500, 1000],
@@ -51,7 +51,7 @@ IMPULSE_P_MAX = 2.5
 # чем меньшне значение, тем больше импульсов детектится, кривая смещается в сторону меньших объёмов
 IMPULSE_EXPONENT = 0.8
 ENABLE_DYNAMIC_THRESHOLD = False 
-IMPULSE_FIXED_THRESHOLD_PCT = 0.5
+IMPULSE_FIXED_THRESHOLD_PCT = 0.4
 # --- API ---
 BINANCE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_24HR_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"

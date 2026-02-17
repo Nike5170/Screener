@@ -28,6 +28,12 @@ from logger import Logger
 
 http_semaphore = asyncio.Semaphore(HTTP_CONCURRENCY)
 
+def to_int_round(x, default: int = 0) -> int:
+    try:
+        return int(round(float(x)))
+    except Exception:
+        return int(default)
+
 
 def dynamic_impulse_threshold(volume):
     """
@@ -100,7 +106,7 @@ class SymbolFetcher:
                     filtered_by_volume = [
                         d for d in data
                         if d["symbol"] in active_symbols
-                        and float(d.get("quoteVolume", 0)) >= VOLUME_THRESHOLD
+                        and to_int_round(d.get("quoteVolume", 0)) >= int(VOLUME_THRESHOLD)
                     ]
                 except Exception as e:
                     Logger.error(f"❌ Ошибка фильтра по объёму: {e}")
@@ -127,7 +133,7 @@ class SymbolFetcher:
                 # ----------------------------------------------------
                 sorted_by_volume = sorted(
                     filtered_by_trades,
-                    key=lambda x: float(x.get("quoteVolume", 0)),
+                    key=lambda x: to_int_round(x.get("quoteVolume", 0)),
                     reverse=True
                 )
 
@@ -160,9 +166,10 @@ class SymbolFetcher:
                 # ----------------------------------------------------
                 sorted_final = sorted(
                     filtered_depth,
-                    key=lambda x: float(x.get("quoteVolume", 0)),
+                    key=lambda x: to_int_round(x.get("quoteVolume", 0)),
                     reverse=True
                 )
+
 
                 # ----------------------------------------------------
                 # 7) Индивидуальные thresholds
@@ -174,19 +181,21 @@ class SymbolFetcher:
 
                 for d in sorted_final:
                     symbol = d["symbol"].lower()
-                    volume = float(d.get("quoteVolume", 0))
+                    volume_i = to_int_round(d.get("quoteVolume", 0))
+                    volumes[symbol] = volume_i
 
-                    volumes[symbol] = volume
                     if ENABLE_DYNAMIC_THRESHOLD:
-                        symbol_thresholds[symbol] = dynamic_impulse_threshold(volume)
+                        symbol_thresholds[symbol] = dynamic_impulse_threshold(volume_i)
                     else:
                         symbol_thresholds[symbol] = float(IMPULSE_FIXED_THRESHOLD_PCT)
 
                     trades24h[symbol] = int(d.get("count", 0))
+
                     orderbook[symbol] = {
-                        "bid": float(d.get("_bid_vol", 0)),
-                        "ask": float(d.get("_ask_vol", 0)),
+                        "bid": int(d.get("_bid_vol", 0) or 0),
+                        "ask": int(d.get("_ask_vol", 0) or 0),
                     }
+
 
                 Logger.info(f"Всего символов после фильтров: {len(volumes)}")
 
@@ -250,6 +259,10 @@ class SymbolFetcher:
             bid_volume = sum(p * q for p, q in bids if p >= lower_bound)
             ask_volume = sum(p * q for p, q in asks if p <= upper_bound)
 
-            ok = bid_volume >= ORDERBOOK_MIN_BID_VOLUME and ask_volume >= ORDERBOOK_MIN_ASK_VOLUME
-            return ok, bid_volume, ask_volume
+            bid_volume_i = to_int_round(bid_volume)
+            ask_volume_i = to_int_round(ask_volume)
+
+            ok = bid_volume_i >= int(ORDERBOOK_MIN_BID_VOLUME) and ask_volume_i >= int(ORDERBOOK_MIN_ASK_VOLUME)
+            return ok, bid_volume_i, ask_volume_i
+
 
