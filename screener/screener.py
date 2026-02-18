@@ -233,10 +233,10 @@ class ATRImpulseScreener:
             "symbol": symbol_up,
 
             # ключи строго как в ALLOWED_FILTERS
-            "volume_threshold": float(vol24h),                 # реальный 24h volume
+            "volume_threshold": int(vol24h),                 # реальный 24h volume
             "min_trades_24h": int(trades24h),                  # реальные 24h trades
-            "orderbook_min_bid": float((ob or {}).get("bid", 0.0)),    # реальный bid-volume в стакане
-            "orderbook_min_ask": float((ob or {}).get("ask", 0.0)),    # реальный ask-volume в стакане
+            "orderbook_min_bid": int((ob or {}).get("bid", 0) or 0), # было float(...)
+            "orderbook_min_ask": int((ob or {}).get("ask", 0) or 0), # было float(...)
             "impulse_trades": int(result.get("impulse_trades") or 0),  # trades внутри импульса
         }
 
