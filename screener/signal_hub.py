@@ -116,9 +116,6 @@ class SignalHub:
 
         try:
             async for raw in ws:
-                if raw == "ping":
-                    await ws.send("pong")
-                    continue
 
                 try:
                     msg = json.loads(raw)
@@ -195,7 +192,15 @@ class SignalHub:
                     await ws.send(json.dumps({"type": "ok"}))
 
                 elif t == "ping":
-                    await ws.send(json.dumps({"type": "pong"}))
+                    await ws.send(json.dumps(
+                        {
+                            "type": "pong",
+                            "id": msg.get("id"),
+                            "ts": msg.get("ts"),
+                            "server_ts": time.time(),
+                        },
+                        ensure_ascii=False
+                    ))
 
                 else:
                     await ws.send(json.dumps({"type": "error", "error": "unknown_type"}))
