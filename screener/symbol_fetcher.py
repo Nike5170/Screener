@@ -77,9 +77,9 @@ class SymbolFetcher:
                 active_symbols = {
                     s["symbol"]
                     for s in info_data["symbols"]
-                    if s.get("contractType") == "PERPETUAL"
+                    if s.get("status") == "TRADING"
                     and s.get("quoteAsset") == "USDT"
-                    and s.get("status") == "TRADING"
+                    and s.get("contractType", "").endswith("PERPETUAL")
                     and s["symbol"] not in EXCLUDE_SYMBOLS
                 }
 
