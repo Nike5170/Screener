@@ -21,6 +21,8 @@ from config import (
     ENABLE_DYNAMIC_THRESHOLD,
     IMPULSE_FIXED_THRESHOLD_PCT,
     ORDERBOOK_REQUEST_DELAY,
+    BINANCE_SPOT_INFO_URL,
+
 
 
 )
@@ -227,6 +229,36 @@ class SymbolFetcher:
     # ============================================================
     #                Проверка стакана
     # ============================================================
+    async def fetch_spot_symbols(self) -> set[str]:
+        """
+        Возвращает set(symbol.lower()) для активных Binance SPOT USDT пар
+        """
+        symbols = set()
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(BINANCE_SPOT_INFO_URL, timeout=10) as resp:
+                    data = await resp.json()
+
+            for s in data.get("symbols", []):
+                if s.get("status") != "TRADING":
+                    continue
+
+                if s.get("quoteAsset") != "USDT":
+                    continue
+
+                # если есть permissions — проверяем SPOT
+                perms = s.get("permissions")
+                if perms and "SPOT" not in perms:
+                    continue
+
+                symbols.add(s["symbol"].lower())
+
+        except Exception as e:
+            Logger.error(f"fetch_spot_symbols error: {e}")
+
+        return symbols
+    
     async def check_order_book_volume(self, session, symbol):
         url_depth = f"{BINANCE_DEPTH_URL}?symbol={symbol.upper()}&limit=500"
         async with http_semaphore:

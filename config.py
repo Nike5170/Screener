@@ -56,6 +56,7 @@ IMPULSE_FIXED_THRESHOLD_PCT = 0.4
 BINANCE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_24HR_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
 BINANCE_DEPTH_URL = "https://fapi.binance.com/fapi/v1/depth"
+BINANCE_SPOT_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
 
 # --------------- notifier.py ---------------
 SOUND_FILE = "notice1.wav"

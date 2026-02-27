@@ -73,6 +73,7 @@ class ATRImpulseScreener:
         self.last_price = {}
         self.signal_hub = None
         self._signalhub_server = None
+        self.spot_symbols: set[str] = set()
 
 
     async def handle_trade(self, symbol, data):
@@ -137,7 +138,7 @@ class ATRImpulseScreener:
         try:
             while True:
                 symbols_24h_volume = await self.symbol_fetcher.fetch_futures_symbols()
-
+                self.spot_symbols = await self.symbol_fetcher.fetch_spot_symbols()
                 # сохраняем 24h объём
                 self.symbol_24h_volume = symbols_24h_volume
                 self.symbol_thresholds = symbols_24h_volume["thresholds"]
@@ -225,13 +226,18 @@ class ATRImpulseScreener:
         vol24h = float(self.symbol_24h_volume["volumes"].get(symbol_up.lower(), 0))
         trades24h = int((self.symbol_24h_volume.get("trades24h") or {}).get(symbol_up.lower(), 0))
         ob = (self.symbol_24h_volume.get("orderbook") or {}).get(symbol_up.lower(), {}) or {}
+        has_spot = symbol_up.lower() in self.spot_symbols
 
         payload = {
             "type": "impulse",
-            "exchange": "BINANCE-FUT",
+            "exchange": "BINANCE",
             "market": "FUTURES",
             "symbol": symbol_up,
-
+            "impulse_market": "BINANCE:FUTURES",
+            "all_markets": {
+                "BINANCE": ["FUTURES", "SPOT"] if has_spot else ["FUTURES"],
+            },
+            
             # ключи строго как в ALLOWED_FILTERS
             "volume_threshold": int(vol24h),                 # реальный 24h volume
             "min_trades_24h": int(trades24h),                  # реальные 24h trades
