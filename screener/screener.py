@@ -230,14 +230,14 @@ class ATRImpulseScreener:
 
         payload = {
             "type": "impulse",
-            "exchange": "BINANCE",
+            "exchange": "BINANCE-FUT",
             "market": "FUTURES",
             "symbol": symbol_up,
             "impulse_market": "BINANCE:FUTURES",
             "all_markets": {
                 "BINANCE": ["FUTURES", "SPOT"] if has_spot else ["FUTURES"],
             },
-            
+
             # ключи строго как в ALLOWED_FILTERS
             "volume_threshold": int(vol24h),                 # реальный 24h volume
             "min_trades_24h": int(trades24h),                  # реальные 24h trades
