@@ -230,12 +230,11 @@ class ATRImpulseScreener:
 
         payload = {
             "type": "impulse",
-            "exchange": "BINANCE-FUT",
-            "market": "FUTURES",
             "symbol": symbol_up,
-            "impulse_market": "BINANCE:FUTURES",
+            "impulse_market": "BINANCE-FUT:FUTURES",
             "all_markets": {
-                "BINANCE": ["FUTURES", "SPOT"] if has_spot else ["FUTURES"],
+                "BINANCE-FUT": ["FUTURES"],
+                **({"BINANCE": ["SPOT"]} if has_spot else {}),
             },
 
             # ключи строго как в ALLOWED_FILTERS
