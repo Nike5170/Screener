@@ -74,6 +74,7 @@ class ATRImpulseScreener:
         self.signal_hub = None
         self._signalhub_server = None
         self.spot_symbols: set[str] = set()
+        self.external_markets: dict[str, list[dict]] = {}
 
 
     async def handle_trade(self, symbol, data):
@@ -162,6 +163,13 @@ class ATRImpulseScreener:
 
                 Logger.info(f"Всего символов после фильтров: {len(symbols)}")
                 #Logger.info(f"Символы:\n{', '.join(symbols)}")
+                try:
+                    binance_syms_up = [s.upper() for s in (symbols_24h_volume.get("volumes") or {}).keys()]
+                    self.external_markets = await self.symbol_fetcher.fetch_external_markets(binance_syms_up)
+                    Logger.info(f"External markets loaded: {len(self.external_markets)} symbols")
+                except Exception as e:
+                    Logger.error(f"External markets load error: {e}")
+                    self.external_markets = {}
                 await self.ws_manager.set_symbols(symbols)
                 await asyncio.sleep(3600)
 
@@ -228,21 +236,46 @@ class ATRImpulseScreener:
         ob = (self.symbol_24h_volume.get("orderbook") or {}).get(symbol_up.lower(), {}) or {}
         has_spot = symbol_up.lower() in self.spot_symbols
 
+        all_markets: dict = {
+            "BINANCE-FUT": [{
+                "market": "FUTURES",
+                "tiger": symbol_up,
+                "volume_usd": float(vol24h or 0.0),
+                "quote": "USDT",
+            }]
+        }
+
+        if has_spot:
+            all_markets["BINANCE"] = [{
+                "market": "SPOT",
+                "tiger": symbol_up,
+                "volume_usd": float(vol24h or 0.0),
+                "quote": "USDT",
+            }]
+
+        extras = (self.external_markets.get(symbol_up) or [])
+        for it in extras:
+            ex = str(it.get("exchange") or "").upper()
+            if not ex or ex in ("BINANCE", "BINANCE-FUT"):
+                continue
+            all_markets.setdefault(ex, []).append({
+                "market": str(it.get("market") or ""),
+                "tiger": str(it.get("tiger") or ""),
+                "volume_usd": float(it.get("volume_usd") or 0.0),
+                "quote": str(it.get("quote") or ""),
+            })
+
         payload = {
             "type": "impulse",
             "symbol": symbol_up,
             "impulse_market": "BINANCE-FUT:FUTURES",
-            "all_markets": {
-                "BINANCE-FUT": ["FUTURES"],
-                **({"BINANCE": ["SPOT"]} if has_spot else {}),
-            },
+            "all_markets": all_markets,
 
-            # ключи строго как в ALLOWED_FILTERS
-            "volume_threshold": int(vol24h),                 # реальный 24h volume
-            "min_trades_24h": int(trades24h),                  # реальные 24h trades
-            "orderbook_min_bid": int((ob or {}).get("bid", 0) or 0), # было float(...)
-            "orderbook_min_ask": int((ob or {}).get("ask", 0) or 0), # было float(...)
-            "impulse_trades": int(result.get("impulse_trades") or 0),  # trades внутри импульса
+            "volume_threshold": int(vol24h),
+            "min_trades_24h": int(trades24h),
+            "orderbook_min_bid": int((ob or {}).get("bid", 0) or 0),
+            "orderbook_min_ask": int((ob or {}).get("ask", 0) or 0),
+            "impulse_trades": int(result.get("impulse_trades") or 0),
         }
 
         # данные для сообщения

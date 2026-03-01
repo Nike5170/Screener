@@ -79,3 +79,64 @@ SIGNAL_HUB_TOKEN = "Qn8vX5sJp2Kz0mWcR4tY7uAa9eLd1HfG3iP6oBnV"
 CLUSTER_INTERVAL = 0.05
 IMPULSE_MAX_CLUSTERS = 300
 IMPULSE_MIN_CLUSTERS = 1
+
+# ===== config.py (PASTE THIS AT THE VERY END OF FILE) =====
+
+# ---------------- External markets (Tiger linking) ----------------
+# Обновляется при старте и каждый час вместе с Binance символами.
+# Собираем all_markets по каноническим тикерам (то, что реально принимает Tiger),
+# и сортируем доп.маркет-площадки по 24h notional volume.
+
+EXTERNAL_MARKETS_ENABLED = True
+
+# сколько рынков максимум добавлять после BINANCE-FUT (+BINANCE spot если есть)
+EXTERNAL_MARKETS_MAX_PER_SYMBOL = 12
+
+# FX для нормализации не-USDT/USDC объёмов (например Upbit KRW-BTC)
+FX_KRW_USD_URL = "https://api.exchangerate.host/convert?from=KRW&to=USD"
+
+# Public ticker endpoints (bulk, без auth). Нужны только для ранжирования по объёму.
+MARKET_TICKER_ENDPOINTS = {
+    # BYBIT
+    "BYBIT_SPOT": "https://api.bybit.com/v5/market/tickers?category=spot",
+    "BYBIT_FUT": "https://api.bybit.com/v5/market/tickers?category=linear",
+
+    # OKX
+    "OKX_SPOT": "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
+    "OKX_SWAP": "https://www.okx.com/api/v5/market/tickers?instType=SWAP",
+
+    # MEXC spot
+    "MEXC_SPOT": "https://api.mexc.com/api/v3/ticker/24hr",
+
+    # Gate.io
+    "GATE_SPOT": "https://api.gateio.ws/api/v4/spot/tickers",
+    "GATE_FUT": "https://api.gateio.ws/api/v4/futures/usdt/tickers",
+
+    # Bitget
+    "BITGET_SPOT": "https://api.bitget.com/api/v2/spot/market/tickers",
+    "BITGET_FUT": "https://api.bitget.com/api/v2/mix/market/tickers?productType=usdt-futures",
+
+    # Upbit (одна пара на запрос, мы подставим markets_csv)
+    "UPBIT_TICKER": "https://api.upbit.com/v1/ticker?markets={markets_csv}",
+
+    # Hyperliquid info endpoint (metaAndAssetCtxs содержит dayNtlVlm)
+    "HYPERLIQUID_INFO": "https://api.hyperliquid.xyz/info",
+
+    # AsterDex (spot/fut)
+    "ASTER_SPOT_24HR": "https://sapi.asterdex.com/api/v1/ticker/24hr",
+    "ASTER_FUT_24HR": "https://fapi.asterdex.com/fapi/v1/ticker/24hr",
+}
+
+# Канонические тикеры для Tiger (пример: BTC)
+TIGER_TICKER_FORMATS = {
+    "BINANCE": {"SPOT": "{base}{quote}", "FUTURES": "{base}{quote}"},
+    "BYBIT": {"SPOT": "{base}{quote}", "FUTURES": "{base}{quote}"},
+    "OKX": {"SPOT": "{base}-{quote}", "FUTURES": "{base}-{quote}-SWAP"},
+    "MEXC": {"SPOT": "{base}{quote}"},
+    "GATE": {"SPOT": "{base}_{quote}", "FUTURES": "{base}_{quote}"},
+    "BITGET": {"SPOT": "{base}{quote}", "FUTURES": "{base}{quote}"},
+    "BACKPACK": {"SPOT": "{base}_{quote}", "FUTURES": "{base}_{quote}_PERP"},
+    "HYPERLIQUID": {"FUTURES": "{base}"},
+    "ASTERDEX": {"SPOT": "{base}{quote}", "FUTURES": "{base}{quote}"},
+    "UPBIT": {"SPOT": "{quote}-{base}"},
+}
