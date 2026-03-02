@@ -133,7 +133,7 @@ TIGER_TICKER_FORMATS = {
     "BYBIT": {"SPOT": "{base}{quote}", "FUTURES": "{base}{quote}"},
     "OKX": {"SPOT": "{base}-{quote}", "FUTURES": "{base}-{quote}-SWAP"},
     "MEXC": {"SPOT": "{base}{quote}"},
-    "GATE": {"SPOT": "{base}_{quote}", "FUTURES": "{base}_{quote}"},
+    "GATE.IO": {"SPOT": "{base}_{quote}", "FUTURES": "{base}_{quote}"},
     "BITGET": {"SPOT": "{base}{quote}", "FUTURES": "{base}{quote}"},
     "BACKPACK": {"SPOT": "{base}_{quote}", "FUTURES": "{base}_{quote}_PERP"},
     "HYPERLIQUID": {"FUTURES": "{base}"},

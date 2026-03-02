@@ -564,14 +564,14 @@ class SymbolFetcher:
                 candidates.append({"exchange": "MEXC", "market": "SPOT", "tiger": t, "volume_usd": v, "quote": "USDT"})
 
             # Gate.io BTC_USDT
-            t = _tiger_symbol("GATE", "SPOT", base, "USDT")
+            t = _tiger_symbol("GATE.IO", "SPOT", base, "USDT")
             v = gate_spot.get(f"{base}_USDT", 0.0)
             if t and v > 0:
-                candidates.append({"exchange": "GATE", "market": "SPOT", "tiger": t, "volume_usd": v, "quote": "USDT"})
-            t = _tiger_symbol("GATE", "FUTURES", base, "USDT")
+                candidates.append({"exchange": "GATE.IO", "market": "SPOT", "tiger": t, "volume_usd": v, "quote": "USDT"})
+            t = _tiger_symbol("GATE.IO", "FUTURES", base, "USDT")
             v = gate_fut.get(f"{base}_USDT", 0.0)
             if t and v > 0:
-                candidates.append({"exchange": "GATE", "market": "FUTURES", "tiger": t, "volume_usd": v, "quote": "USDT"})
+                candidates.append({"exchange": "GATE.IO", "market": "FUTURES", "tiger": t, "volume_usd": v, "quote": "USDT"})
 
             # Bitget USDT
             t = _tiger_symbol("BITGET", "SPOT", base, "USDT")
