@@ -125,6 +125,10 @@ MARKET_TICKER_ENDPOINTS = {
     # AsterDex (spot/fut)
     "ASTER_SPOT_24HR": "https://sapi.asterdex.com/api/v1/ticker/24hr",
     "ASTER_FUT_24HR": "https://fapi.asterdex.com/fapi/v1/ticker/24hr",
+
+    # Backpack (spot/fut)
+    "BACKPACK_SPOT": "https://api.backpack.exchange/api/v1/tickers",
+    "BACKPACK_FUT": "https://api.backpack.exchange/api/v1/tickers",
 }
 
 # Канонические тикеры для Tiger (пример: BTC)

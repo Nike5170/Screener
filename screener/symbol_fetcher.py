@@ -351,6 +351,7 @@ class SymbolFetcher:
         aster_spot, aster_fut = {}, {}
         upbit = {}
         hyper = {}
+        backpack_spot, backpack_fut = {}, {}
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             # BYBIT
@@ -385,11 +386,12 @@ class SymbolFetcher:
                     lst = (j or {}).get("data") or []
                     for it in lst:
                         inst = str(it.get("instId") or "").upper()
-                        vol = _safe_float(it.get("volCcy24") or it.get("volCcy") or 0.0, 0.0)
+                        # volCcy24h = volume in quote currency (USDT)
+                        vol = _safe_float(it.get("volCcy24h") or it.get("vol24h") or 0.0, 0.0)
                         if inst:
                             okx_spot[inst] = vol
-            except Exception:
-                pass
+            except Exception as e:
+                Logger.error(f"OKX SPOT load error: {e}")
 
             try:
                 async with session.get(MARKET_TICKER_ENDPOINTS["OKX_SWAP"]) as r:
@@ -397,11 +399,12 @@ class SymbolFetcher:
                     lst = (j or {}).get("data") or []
                     for it in lst:
                         inst = str(it.get("instId") or "").upper()
-                        vol = _safe_float(it.get("volCcy24") or it.get("volCcy") or 0.0, 0.0)
+                        # volCcy24h = volume in quote currency (USDT)
+                        vol = _safe_float(it.get("volCcy24h") or it.get("vol24h") or 0.0, 0.0)
                         if inst:
                             okx_swap[inst] = vol
-            except Exception:
-                pass
+            except Exception as e:
+                Logger.error(f"OKX SWAP load error: {e}")
 
             # MEXC spot
             try:
@@ -511,8 +514,8 @@ class SymbolFetcher:
                             vol_usd = vol_krw * krw_usd if krw_usd > 0 else 0.0
                             if m:
                                 upbit[m] = vol_usd
-            except Exception:
-                pass
+            except Exception as e:
+                Logger.error(f"Upbit load error: {e}")
 
             # Hyperliquid
             try:
@@ -529,8 +532,33 @@ class SymbolFetcher:
                                 day = _safe_float((ctxs[i] or {}).get("dayNtlVlm"), 0.0)
                                 if name:
                                     hyper[name] = day
-            except Exception:
-                pass
+            except Exception as e:
+                Logger.error(f"Hyperliquid load error: {e}")
+
+            # Backpack
+            try:
+                async with session.get(MARKET_TICKER_ENDPOINTS["BACKPACK_SPOT"]) as r:
+                    j = await r.json()
+                    if isinstance(j, list):
+                        for it in j:
+                            sym = str(it.get("symbol") or "").upper()
+                            vol = _safe_float(it.get("volume"), 0.0)
+                            if sym:
+                                backpack_spot[sym] = vol
+            except Exception as e:
+                Logger.error(f"Backpack SPOT load error: {e}")
+
+            try:
+                async with session.get(MARKET_TICKER_ENDPOINTS["BACKPACK_FUT"]) as r:
+                    j = await r.json()
+                    if isinstance(j, list):
+                        for it in j:
+                            sym = str(it.get("symbol") or "").upper()
+                            vol = _safe_float(it.get("volume"), 0.0)
+                            if sym:
+                                backpack_fut[sym] = vol
+            except Exception as e:
+                Logger.error(f"Backpack FUTURES load error: {e}")
 
         for sym in binance_usdt_symbols:
             sym_up = str(sym).upper()
@@ -604,6 +632,16 @@ class SymbolFetcher:
             v = hyper.get(base, 0.0)
             if t and v > 0:
                 candidates.append({"exchange": "HYPERLIQUID", "market": "FUTURES", "tiger": t, "volume_usd": v, "quote": "USDC"})
+
+            # Backpack BTC_USDC
+            t = _tiger_symbol("BACKPACK", "SPOT", base, "USDC")
+            v = backpack_spot.get(f"{base}_USDC", 0.0)
+            if t and v > 0:
+                candidates.append({"exchange": "BACKPACK", "market": "SPOT", "tiger": t, "volume_usd": v, "quote": "USDC"})
+            t = _tiger_symbol("BACKPACK", "FUTURES", base, "USDC")
+            v = backpack_fut.get(f"{base}_USDC_PERP", 0.0)
+            if t and v > 0:
+                candidates.append({"exchange": "BACKPACK", "market": "FUTURES", "tiger": t, "volume_usd": v, "quote": "USDC"})
 
             candidates.sort(key=lambda x: float(x.get("volume_usd") or 0.0), reverse=True)
             if EXTERNAL_MARKETS_MAX_PER_SYMBOL and len(candidates) > EXTERNAL_MARKETS_MAX_PER_SYMBOL:
