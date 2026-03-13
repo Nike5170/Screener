@@ -334,14 +334,21 @@ class SymbolFetcher:
         timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SEC)
         out: dict[str, list[dict]] = {}
 
+        # frankfurter.app returns {"rates": {"USD": 0.000...}}
+        # fallback: ~1370 KRW/USD (approximate, used only if API fails)
+        KRW_USD_FALLBACK = 1.0 / 1370.0
         krw_usd = 0.0
         try:
             async with aiohttp.ClientSession(timeout=timeout) as s:
                 async with s.get(FX_KRW_USD_URL) as r:
-                    j = await r.json()
-                    krw_usd = _safe_float(j.get("result"), 0.0)
-        except Exception:
-            krw_usd = 0.0
+                    j = await r.json(content_type=None)
+                    krw_usd = _safe_float((j.get("rates") or {}).get("USD"), 0.0)
+            if krw_usd <= 0:
+                Logger.warn("FX KRW/USD API returned 0, using fallback rate")
+                krw_usd = KRW_USD_FALLBACK
+        except Exception as e:
+            Logger.warn(f"FX KRW/USD fetch failed ({e}), using fallback rate")
+            krw_usd = KRW_USD_FALLBACK
 
         bybit_spot, bybit_fut = {}, {}
         okx_spot, okx_swap = {}, {}

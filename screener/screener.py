@@ -253,17 +253,24 @@ class ATRImpulseScreener:
                 "quote": "USDT",
             }]
 
+        # extras already sorted by volume desc from fetch_external_markets
         extras = (self.external_markets.get(symbol_up) or [])
+        seen_ex_count: dict[str, int] = {}
         for it in extras:
             ex = str(it.get("exchange") or "").upper()
             if not ex or ex in ("BINANCE", "BINANCE-FUT"):
                 continue
-            all_markets.setdefault(ex, []).append({
+            cnt = seen_ex_count.get(ex, 0)
+            seen_ex_count[ex] = cnt + 1
+            # unique key: first occurrence uses plain exchange name,
+            # subsequent use "EXCHANGE~N" so dict order = volume order
+            key = ex if cnt == 0 else f"{ex}~{cnt}"
+            all_markets[key] = [{
                 "market": str(it.get("market") or ""),
                 "tiger": str(it.get("tiger") or ""),
                 "volume_usd": float(it.get("volume_usd") or 0.0),
                 "quote": str(it.get("quote") or ""),
-            })
+            }]
 
         payload = {
             "type": "impulse",

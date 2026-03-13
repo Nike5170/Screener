@@ -93,7 +93,8 @@ EXTERNAL_MARKETS_ENABLED = True
 EXTERNAL_MARKETS_MAX_PER_SYMBOL = 12
 
 # FX для нормализации не-USDT/USDC объёмов (например Upbit KRW-BTC)
-FX_KRW_USD_URL = "https://api.exchangerate.host/convert?from=KRW&to=USD"
+# frankfurter.app — бесплатный, без ключа, надёжный; формат: {"rates": {"USD": 0.000...}}
+FX_KRW_USD_URL = "https://api.frankfurter.app/latest?from=KRW&to=USD"
 
 # Public ticker endpoints (bulk, без auth). Нужны только для ранжирования по объёму.
 MARKET_TICKER_ENDPOINTS = {
